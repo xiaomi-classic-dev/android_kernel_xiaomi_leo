@@ -645,6 +645,12 @@ static inline struct cgroup_subsys_state *cgroup_subsys_state(
 	return cgrp->subsys[subsys_id];
 }
 
+static inline struct cgroup_subsys_state *cgroup_css(
+	struct cgroup *cgrp, int subsys_id)
+{
+	return cgroup_subsys_state(cgrp, subsys_id);
+}
+
 /**
  * task_css_set_check - obtain a task's css_set with extra access conditions
  * @task: the task to obtain css_set for
@@ -703,6 +709,12 @@ static inline struct cgroup_subsys_state *
 task_subsys_state(struct task_struct *task, int subsys_id)
 {
 	return task_subsys_state_check(task, subsys_id, false);
+}
+
+static inline struct cgroup_subsys_state *
+task_css(struct task_struct *task, int subsys_id)
+{
+	return task_subsys_state(task, subsys_id);
 }
 
 static inline struct cgroup* task_cgroup(struct task_struct *task,
