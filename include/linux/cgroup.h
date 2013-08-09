@@ -671,23 +671,11 @@ struct cgroup_subsys_state *css_parent(struct cgroup_subsys_state *css)
 		return &parent_cgrp->dummy_css;
 }
 
-/**
- * cgroup_css - obtain a cgroup's css for the specified subsystem
- * @cgrp: the cgroup of interest
- * @subsys_id: the subsystem of interest
- *
- * Return @cgrp's css (cgroup_subsys_state) associated with @subsys_id.
- */
-static inline struct cgroup_subsys_state *cgroup_css(struct cgroup *cgrp,
-						     int subsys_id)
-{
-	return cgrp->subsys[subsys_id];
-}
-
+/* Compatibility accessor for legacy Libra-only cgroup users. */
 static inline struct cgroup_subsys_state *cgroup_subsys_state(
 	struct cgroup *cgrp, int subsys_id)
 {
-	return cgroup_css(cgrp, subsys_id);
+	return cgrp->subsys[subsys_id];
 }
 
 /**
