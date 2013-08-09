@@ -3276,13 +3276,11 @@ EXPORT_SYMBOL_GPL(css_next_descendant_post);
 
 /**
  * cgroup_advance_task_iter - advance a task itererator to the next css_set
- * @cgrp: the cgroup to walk tasks of
  * @it: the iterator to advance
  *
  * Advance @it to the next css_set to walk.
  */
-static void cgroup_advance_task_iter(struct cgroup *cgrp,
-				     struct cgroup_task_iter *it)
+static void cgroup_advance_task_iter(struct cgroup_task_iter *it)
 {
 	struct list_head *l = it->cset_link;
 	struct cgrp_cset_link *link;
@@ -3291,7 +3289,7 @@ static void cgroup_advance_task_iter(struct cgroup *cgrp,
 	/* Advance to the next non-empty css_set */
 	do {
 		l = l->next;
-		if (l == &cgrp->cset_links) {
+		if (l == &it->origin_cgrp->cset_links) {
 			it->cset_link = NULL;
 			return;
 		}
@@ -3328,21 +3326,22 @@ void cgroup_task_iter_start(struct cgroup *cgrp, struct cgroup_task_iter *it)
 		cgroup_enable_task_cg_lists();
 
 	read_lock(&css_set_lock);
+
+	it->origin_cgrp = cgrp;
 	it->cset_link = &cgrp->cset_links;
-	cgroup_advance_task_iter(cgrp, it);
+
+	cgroup_advance_task_iter(it);
 }
 
 /**
  * cgroup_task_iter_next - return the next task for the iterator
- * @cgrp: the cgroup to walk tasks of
  * @it: the task iterator being iterated
  *
  * The "next" function for task iteration.  @it should have been
  * initialized via cgroup_task_iter_start().  Returns NULL when the
  * iteration reaches the end.
  */
-struct task_struct *cgroup_task_iter_next(struct cgroup *cgrp,
-					  struct cgroup_task_iter *it)
+struct task_struct *cgroup_task_iter_next(struct cgroup_task_iter *it)
 {
 	struct task_struct *res;
 	struct list_head *l = it->task;
@@ -3360,7 +3359,7 @@ struct task_struct *cgroup_task_iter_next(struct cgroup *cgrp,
 		 * We reached the end of this task list - move on to the
 		 * next cgrp_cset_link.
 		 */
-		cgroup_advance_task_iter(cgrp, it);
+		cgroup_advance_task_iter(it);
 	} else {
 		it->task = l;
 	}
@@ -3369,12 +3368,11 @@ struct task_struct *cgroup_task_iter_next(struct cgroup *cgrp,
 
 /**
  * cgroup_task_iter_end - finish task iteration
- * @cgrp: the cgroup to walk tasks of
  * @it: the task iterator to finish
  *
  * Finish task iteration started by cgroup_task_iter_start().
  */
-void cgroup_task_iter_end(struct cgroup *cgrp, struct cgroup_task_iter *it)
+void cgroup_task_iter_end(struct cgroup_task_iter *it)
 	__releases(css_set_lock)
 {
 	read_unlock(&css_set_lock);
@@ -3480,7 +3478,7 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 	 */
 	heap->size = 0;
 	cgroup_task_iter_start(scan->cgrp, &it);
-	while ((p = cgroup_task_iter_next(scan->cgrp, &it))) {
+	while ((p = cgroup_task_iter_next(&it))) {
 		/*
 		 * Only affect tasks that qualify per the caller's callback,
 		 * if he provided one
@@ -3513,7 +3511,7 @@ int cgroup_scan_tasks(struct cgroup_scanner *scan)
 		 * the heap and wasn't inserted
 		 */
 	}
-	cgroup_task_iter_end(scan->cgrp, &it);
+	cgroup_task_iter_end(&it);
 
 	if (heap->size) {
 		for (i = 0; i < heap->size; i++) {
@@ -3735,7 +3733,7 @@ static int pidlist_array_load(struct cgroup *cgrp, enum cgroup_filetype type,
 		return -ENOMEM;
 	/* now, populate the array */
 	cgroup_task_iter_start(cgrp, &it);
-	while ((tsk = cgroup_task_iter_next(cgrp, &it))) {
+	while ((tsk = cgroup_task_iter_next(&it))) {
 		if (unlikely(n == length))
 			break;
 		/* get tgid or pid for procs or tasks file respectively */
@@ -3746,7 +3744,7 @@ static int pidlist_array_load(struct cgroup *cgrp, enum cgroup_filetype type,
 		if (pid > 0) /* make sure to only use valid results */
 			array[n++] = pid;
 	}
-	cgroup_task_iter_end(cgrp, &it);
+	cgroup_task_iter_end(&it);
 	length = n;
 	/* now sort & (if procs) strip out duplicates */
 	sort(array, length, sizeof(pid_t), cmppid, NULL);
@@ -3795,7 +3793,7 @@ int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry)
 	cgrp = dentry->d_fsdata;
 
 	cgroup_task_iter_start(cgrp, &it);
-	while ((tsk = cgroup_task_iter_next(cgrp, &it))) {
+	while ((tsk = cgroup_task_iter_next(&it))) {
 		switch (tsk->state) {
 		case TASK_RUNNING:
 			stats->nr_running++;
@@ -3815,7 +3813,7 @@ int cgroupstats_build(struct cgroupstats *stats, struct dentry *dentry)
 			break;
 		}
 	}
-	cgroup_task_iter_end(cgrp, &it);
+	cgroup_task_iter_end(&it);
 
 err:
 	return ret;
