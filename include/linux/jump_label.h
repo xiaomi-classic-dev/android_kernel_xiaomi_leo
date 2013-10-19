@@ -49,6 +49,13 @@
 #include <linux/types.h>
 #include <linux/compiler.h>
 #include <linux/workqueue.h>
+#include <linux/bug.h>
+
+extern bool static_key_initialized;
+
+#define STATIC_KEY_CHECK_USE() WARN(!static_key_initialized,		      \
+				    "%s used before call to jump_label_init", \
+				    __func__)
 
 #if defined(CC_HAVE_ASM_GOTO) && defined(CONFIG_JUMP_LABEL)
 
@@ -139,6 +146,7 @@ struct static_key {
 
 static __always_inline void jump_label_init(void)
 {
+	static_key_initialized = true;
 }
 
 struct static_key_deferred {
@@ -161,16 +169,19 @@ static __always_inline bool static_key_true(struct static_key *key)
 
 static inline void static_key_slow_inc(struct static_key *key)
 {
+	STATIC_KEY_CHECK_USE();
 	atomic_inc(&key->enabled);
 }
 
 static inline void static_key_slow_dec(struct static_key *key)
 {
+	STATIC_KEY_CHECK_USE();
 	atomic_dec(&key->enabled);
 }
 
 static inline void static_key_slow_dec_deferred(struct static_key_deferred *key)
 {
+	STATIC_KEY_CHECK_USE();
 	static_key_slow_dec(&key->key);
 }
 
@@ -191,6 +202,7 @@ static inline void
 jump_label_rate_limit(struct static_key_deferred *key,
 		unsigned long rl)
 {
+	STATIC_KEY_CHECK_USE();
 }
 
 #define STATIC_KEY_INIT_TRUE ((struct static_key) \
