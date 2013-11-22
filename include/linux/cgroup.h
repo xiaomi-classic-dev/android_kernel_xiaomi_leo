@@ -863,11 +863,6 @@ struct cgroup_subsys_state *css_from_dir(struct dentry *dentry,
 int subsys_cgroup_allow_attach(struct cgroup *cgrp,
 			       struct cgroup_taskset *tset);
 
-/* XXX: temporary */
-struct cgroup_subsys_state *cgroup_css(struct cgroup *cgrp,
-				       struct cgroup_subsys *ss);
-struct cftype *__file_cft(struct file *file);
-
 #else /* !CONFIG_CGROUPS */
 
 static inline int cgroup_init_early(void) { return 0; }
