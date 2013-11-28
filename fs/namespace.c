@@ -2819,6 +2819,7 @@ void __init mnt_init(void)
 		INIT_LIST_HEAD(&mountpoint_hashtable[u]);
 
 	br_lock_init(&vfsmount_lock);
+	kernfs_init();
 
 	err = sysfs_init();
 	if (err)
