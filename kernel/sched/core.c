@@ -9658,7 +9658,7 @@ void sched_move_task(struct task_struct *tsk)
 	if (unlikely(running))
 		tsk->sched_class->put_prev_task(rq, tsk);
 
-	tg = container_of(task_subsys_state_check(tsk, cpu_cgroup_subsys_id,
+	tg = container_of(task_css_check(tsk, cpu_cgrp_id,
 				lockdep_is_held(&tsk->sighand->siglock)),
 			  struct task_group, css);
 	tg = autogroup_task_group(tsk, tg);
@@ -10458,8 +10458,7 @@ static struct cftype cpu_files[] = {
 	{ }	/* terminate */
 };
 
-struct cgroup_subsys cpu_cgroup_subsys = {
-	.name		= "cpu",
+struct cgroup_subsys cpu_cgrp_subsys = {
 	.css_alloc	= cpu_cgroup_css_alloc,
 	.css_free	= cpu_cgroup_css_free,
 	.css_online	= cpu_cgroup_css_online,
@@ -10468,7 +10467,6 @@ struct cgroup_subsys cpu_cgroup_subsys = {
 	.attach		= cpu_cgroup_attach,
 	.allow_attach	= subsys_cgroup_allow_attach,
 	.exit		= cpu_cgroup_exit,
-	.subsys_id	= cpu_cgroup_subsys_id,
 	.base_cftypes	= cpu_files,
 	.early_init	= 1,
 };

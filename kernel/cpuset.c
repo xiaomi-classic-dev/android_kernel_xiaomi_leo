@@ -69,9 +69,6 @@
  */
 int number_of_cpusets __read_mostly;
 
-/* Forward declare cgroup structures */
-struct cgroup_subsys cpuset_subsys;
-
 /* See "Frequency meter" comments, below. */
 
 struct fmeter {
@@ -123,7 +120,7 @@ static inline struct cpuset *css_cs(struct cgroup_subsys_state *css)
 /* Retrieve the cpuset for a task */
 static inline struct cpuset *task_cs(struct task_struct *task)
 {
-	return css_cs(task_css(task, cpuset_subsys_id));
+	return css_cs(task_css(task, cpuset_cgrp_id));
 }
 
 static inline struct cpuset *parent_cs(struct cpuset *cs)
@@ -1534,7 +1531,7 @@ static void cpuset_attach(struct cgroup_subsys_state *css,
 	struct task_struct *task;
 	struct task_struct *leader = cgroup_taskset_first(tset);
 	struct cgroup_subsys_state *oldcss = cgroup_taskset_cur_css(tset,
-							cpuset_subsys_id);
+							cpuset_cgrp_id);
 	struct cpuset *cs = css_cs(css);
 	struct cpuset *oldcs = css_cs(oldcss);
 	struct cpuset *cpus_cs = effective_cpumask_cpuset(cs);
@@ -2035,8 +2032,7 @@ static void cpuset_css_free(struct cgroup_subsys_state *css)
 	kfree(cs);
 }
 
-struct cgroup_subsys cpuset_subsys = {
-	.name = "cpuset",
+struct cgroup_subsys cpuset_cgrp_subsys = {
 	.css_alloc = cpuset_css_alloc,
 	.css_online = cpuset_css_online,
 	.css_offline = cpuset_css_offline,
@@ -2045,7 +2041,6 @@ struct cgroup_subsys cpuset_subsys = {
 	.allow_attach = cpuset_allow_attach,
 	.cancel_attach = cpuset_cancel_attach,
 	.attach = cpuset_attach,
-	.subsys_id = cpuset_subsys_id,
 	.base_cftypes = files,
 	.early_init = 1,
 };
@@ -2725,7 +2720,7 @@ int proc_cpuset_show(struct seq_file *m, void *unused_v)
 		goto out_free;
 
 	rcu_read_lock();
-	css = task_subsys_state(tsk, cpuset_subsys_id);
+	css = task_css(tsk, cpuset_cgrp_id);
 	retval = cgroup_path(css->cgroup, buf, PAGE_SIZE);
 	rcu_read_unlock();
 	if (retval < 0)
