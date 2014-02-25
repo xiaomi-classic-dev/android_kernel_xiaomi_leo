@@ -665,10 +665,12 @@ static inline struct cgroup_subsys_state *cgroup_subsys_state(
  */
 #ifdef CONFIG_PROVE_RCU
 extern struct mutex cgroup_mutex;
+extern struct rw_semaphore css_set_rwsem;
 #define task_css_set_check(task, __c)					\
 	rcu_dereference_check((task)->cgroups,				\
-		lockdep_is_held(&(task)->alloc_lock) ||			\
-		lockdep_is_held(&cgroup_mutex) || (__c))
+		lockdep_is_held(&cgroup_mutex) ||			\
+		lockdep_is_held(&css_set_rwsem) ||			\
+		((task)->flags & PF_EXITING) || (__c))
 #else
 #define task_css_set_check(task, __c)					\
 	rcu_dereference((task)->cgroups)
