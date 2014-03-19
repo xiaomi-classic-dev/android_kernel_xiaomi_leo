@@ -436,7 +436,7 @@ void freezer_change_state_to_thawed(struct cgroup *cgroup)
 #endif
 
 static int freezer_write(struct cgroup_subsys_state *css, struct cftype *cft,
-			 const char *buffer)
+			 char *buffer)
 {
 	bool freeze;
 
