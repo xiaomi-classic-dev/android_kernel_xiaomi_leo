@@ -144,7 +144,13 @@ static const char *cgroup_subsys_name[] = {
  * unattached - it never has more than a single cgroup, and all tasks are
  * part of that cgroup.
  */
-static struct cgroup_root cgrp_dfl_root;
+struct cgroup_root cgrp_dfl_root;
+
+/*
+ * The default hierarchy always exists but is hidden until mounted for the
+ * first time.  This is for backward compatibility.
+ */
+static bool cgrp_dfl_root_visible;
 
 /* The list of hierarchy roots */
 
@@ -1030,10 +1036,22 @@ static int rebind_subsystems(struct cgroup_root *dst_root,
 			return -EBUSY;
 	}
 
-	if (dst_root != &cgrp_dfl_root) {
-		ret = cgroup_populate_dir(&dst_root->cgrp, ss_mask);
-		if (ret)
+	ret = cgroup_populate_dir(&dst_root->cgrp, ss_mask);
+	if (ret) {
+		if (dst_root != &cgrp_dfl_root)
 			return ret;
+
+		/*
+		 * Rebinding back to the default root is not allowed to
+		 * fail.  Using both default and non-default roots should
+		 * be rare.  Moving subsystems back and forth even more so.
+		 * Just warn about it and continue.
+		 */
+		if (cgrp_dfl_root_visible) {
+			pr_warning("cgroup: failed to create files (%d) while rebinding 0x%lx to default root\n",
+				   ret, ss_mask);
+			pr_warning("cgroup: you may retry by moving them to a different hierarchy and unbinding\n");
+		}
 	}
 
 	/*
@@ -1042,7 +1060,7 @@ static int rebind_subsystems(struct cgroup_root *dst_root,
 	 */
 	mutex_unlock(&cgroup_mutex);
 	for_each_subsys(ss, ssid)
-		if ((ss_mask & (1 << ssid)) && ss->root != &cgrp_dfl_root)
+		if (ss_mask & (1 << ssid))
 			cgroup_clear_dir(&ss->root->cgrp, 1 << ssid);
 	mutex_lock(&cgroup_mutex);
 
@@ -1070,8 +1088,7 @@ static int rebind_subsystems(struct cgroup_root *dst_root,
 			ss->bind(css);
 	}
 
-	if (dst_root != &cgrp_dfl_root)
-		kernfs_activate(dst_root->cgrp.kn);
+	kernfs_activate(dst_root->cgrp.kn);
 	return 0;
 }
 
@@ -1221,16 +1238,6 @@ static int parse_cgroupfs_options(char *data, struct cgroup_sb_opts *opts)
 			return -ENOENT;
 	}
 
-	/*
-	 * If the 'all' option was specified select all the subsystems,
-	 * otherwise if 'none', 'name=' and a subsystem name options
-	 * were not specified, let's default to 'all'
-	 */
-	if (all_ss || (!one_ss && !opts->none && !opts->name))
-		for_each_subsys(ss, i)
-			if (!ss->disabled)
-				set_bit(i, &opts->subsys_mask);
-
 	/* Consistency checks */
 
 	if (opts->flags & CGRP_ROOT_SANE_BEHAVIOR) {
@@ -1242,6 +1249,23 @@ static int parse_cgroupfs_options(char *data, struct cgroup_sb_opts *opts)
 			pr_err("cgroup: sane_behavior: noprefix, xattr, clone_children, release_agent and name are not allowed\n");
 			return -EINVAL;
 		}
+	} else {
+		/*
+		 * If the 'all' option was specified select all the
+		 * subsystems, otherwise if 'none', 'name=' and a subsystem
+		 * name options were not specified, let's default to 'all'
+		 */
+		if (all_ss || (!one_ss && !opts->none && !opts->name))
+			for_each_subsys(ss, i)
+				if (!ss->disabled)
+					set_bit(i, &opts->subsys_mask);
+
+		/*
+		 * We either have to specify by name or by subsystems. (So
+		 * all empty hierarchies must have a name).
+		 */
+		if (!opts->subsys_mask && !opts->name)
+			return -EINVAL;
 	}
 
 	/*
@@ -1255,13 +1279,6 @@ static int parse_cgroupfs_options(char *data, struct cgroup_sb_opts *opts)
 
 	/* Can't specify "none" and some subsystems */
 	if (opts->subsys_mask && opts->none)
-		return -EINVAL;
-
-	/*
-	 * We either have to specify by name or by subsystems. (So all
-	 * empty hierarchies must have a name).
-	 */
-	if (!opts->subsys_mask && !opts->name)
 		return -EINVAL;
 
 	return 0;
@@ -1518,6 +1535,14 @@ retry:
 		goto out_unlock;
 
 	/* look for a matching existing root */
+	if (!opts.subsys_mask && !opts.none && !opts.name) {
+		cgrp_dfl_root_visible = true;
+		root = &cgrp_dfl_root;
+		cgroup_get(&root->cgrp);
+		ret = 0;
+		goto out_unlock;
+	}
+
 	for_each_root(root) {
 		bool name_match = false;
 
@@ -3657,6 +3682,13 @@ static long cgroup_create(struct cgroup *parent, const char *name,
 	struct cgroup_subsys *ss;
 	struct kernfs_node *kn;
 
+	/*
+	 * XXX: The default hierarchy isn't fully implemented yet.  Block
+	 * !root cgroup creation on it for now.
+	 */
+	if (root == &cgrp_dfl_root)
+		return -EINVAL;
+
 	/* allocate the cgroup and its ID, 0 is reserved for the root */
 	cgrp = kzalloc(sizeof(*cgrp), GFP_KERNEL);
 	if (!cgrp)
@@ -4096,7 +4128,8 @@ static void __init cgroup_init_subsys(struct cgroup_subsys *ss)
  */
 int __init cgroup_init_early(void)
 {
-	static struct cgroup_sb_opts __initdata opts = { };
+	static struct cgroup_sb_opts __initdata opts =
+		{ .flags = CGRP_ROOT_SANE_BEHAVIOR };
 	struct cgroup_subsys *ss;
 	int i;
 
@@ -4233,7 +4266,7 @@ int proc_cgroup_show(struct seq_file *m, void *v)
 		struct cgroup *cgrp;
 		int ssid, count = 0;
 
-		if (root == &cgrp_dfl_root)
+		if (root == &cgrp_dfl_root && !cgrp_dfl_root_visible)
 			continue;
 
 		seq_printf(m, "%d:", root->hierarchy_id);
@@ -4666,15 +4699,10 @@ static int current_css_set_cg_links_read(struct seq_file *seq, void *v)
 	cset = rcu_dereference(current->cgroups);
 	list_for_each_entry(link, &cset->cgrp_links, cgrp_link) {
 		struct cgroup *c = link->cgrp;
-		const char *name = "?";
 
-		if (c != &cgrp_dfl_root.cgrp) {
-			cgroup_name(c, name_buf, NAME_MAX + 1);
-			name = name_buf;
-		}
-
+		cgroup_name(c, name_buf, NAME_MAX + 1);
 		seq_printf(seq, "Root %d group %s\n",
-			   c->root->hierarchy_id, name);
+			   c->root->hierarchy_id, name_buf);
 	}
 	rcu_read_unlock();
 	up_read(&css_set_rwsem);
