@@ -521,6 +521,7 @@ struct cftype {
 };
 
 extern struct cgroup_root cgrp_dfl_root;
+extern struct css_set init_css_set;
 
 static inline bool cgroup_on_dfl(const struct cgroup *cgrp)
 {
@@ -723,7 +724,7 @@ extern struct rw_semaphore css_set_rwsem;
 #endif
 
 /**
- * task_subsys_state_check - obtain css for (task, subsys) w/ extra access conds
+ * task_css_check - obtain css for (task, subsys) w/ extra access conds
  * @task: the target task
  * @subsys_id: the target subsystem ID
  * @__c: extra condition expression to be passed to rcu_dereference_check()
@@ -731,8 +732,11 @@ extern struct rw_semaphore css_set_rwsem;
  * Return the cgroup_subsys_state for the (@task, @subsys_id) pair.  The
  * synchronization rules are the same as task_css_set_check().
  */
-#define task_subsys_state_check(task, subsys_id, __c)			\
+#define task_css_check(task, subsys_id, __c)				\
 	task_css_set_check((task), (__c))->subsys[(subsys_id)]
+
+#define task_subsys_state_check(task, subsys_id, __c)			\
+	task_css_check((task), (subsys_id), (__c))
 
 /**
  * task_css_set - obtain a task's css_set
@@ -746,28 +750,42 @@ static inline struct css_set *task_css_set(struct task_struct *task)
 }
 
 /**
- * task_subsys_state - obtain css for (task, subsys)
+ * task_css - obtain css for (task, subsys)
  * @task: the target task
  * @subsys_id: the target subsystem ID
  *
- * See task_subsys_state_check().
+ * See task_css_check().
  */
+static inline struct cgroup_subsys_state *task_css(struct task_struct *task,
+						   int subsys_id)
+{
+	return task_css_check(task, subsys_id, false);
+}
+
 static inline struct cgroup_subsys_state *
 task_subsys_state(struct task_struct *task, int subsys_id)
 {
-	return task_subsys_state_check(task, subsys_id, false);
+	return task_css(task, subsys_id);
 }
 
-static inline struct cgroup_subsys_state *
-task_css(struct task_struct *task, int subsys_id)
+/**
+ * task_css_is_root - test whether a task belongs to the root css
+ * @task: the target task
+ * @subsys_id: the target subsystem ID
+ *
+ * Test whether @task belongs to the root css on the specified subsystem.
+ * May be invoked in any context.
+ */
+static inline bool task_css_is_root(struct task_struct *task, int subsys_id)
 {
-	return task_subsys_state(task, subsys_id);
+	return task_css_check(task, subsys_id, true) ==
+		init_css_set.subsys[subsys_id];
 }
 
-static inline struct cgroup* task_cgroup(struct task_struct *task,
-					       int subsys_id)
+static inline struct cgroup *task_cgroup(struct task_struct *task,
+					 int subsys_id)
 {
-	return task_subsys_state(task, subsys_id)->cgroup;
+	return task_css(task, subsys_id)->cgroup;
 }
 
 struct cgroup_subsys_state *css_next_child(struct cgroup_subsys_state *pos,
