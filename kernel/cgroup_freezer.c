@@ -74,10 +74,6 @@ bool cgroup_freezing(struct task_struct *task)
 	return ret;
 }
 
-/*
- * cgroups_write_string() limits the size of freezer state strings to
- * CGROUP_LOCAL_BUFFER_SIZE
- */
 static const char *freezer_state_strs(unsigned int state)
 {
 	if (state & CGROUP_FROZEN)
@@ -429,30 +425,51 @@ static void freezer_change_state(struct freezer *freezer, bool freeze)
 }
 
 #ifdef CONFIG_FROZEN_APP
-void freezer_change_state_to_thawed(struct cgroup *cgroup)
+void cgroup_thawed_by_pid(int pid_nr)
 {
-	struct freezer *freezer;
-	freezer = cgroup_freezer(cgroup);
-	if (freezer->state & CGROUP_FROZEN)
+	struct task_struct *task;
+	struct freezer *freezer = NULL;
+
+	rcu_read_lock();
+	task = find_task_by_vpid(pid_nr);
+	if (task) {
+		get_task_struct(task);
+		if (frozen(task)) {
+			freezer = task_freezer(task);
+			if (!css_tryget_online(&freezer->css))
+				freezer = NULL;
+		}
+	}
+	rcu_read_unlock();
+
+	if (!task)
+		return;
+
+	if (freezer) {
 		freezer_change_state(freezer, false);
-	return;
+		css_put(&freezer->css);
+		pr_info("comm=%s CGROUP_THAWED\n", task->comm);
+	}
+	put_task_struct(task);
 }
 #endif
 
-static int freezer_write(struct cgroup_subsys_state *css, struct cftype *cft,
-			 char *buffer)
+static ssize_t freezer_write(struct kernfs_open_file *of,
+			     char *buf, size_t nbytes, loff_t off)
 {
 	bool freeze;
 
-	if (strcmp(buffer, freezer_state_strs(0)) == 0)
+	buf = strstrip(buf);
+
+	if (strcmp(buf, freezer_state_strs(0)) == 0)
 		freeze = false;
-	else if (strcmp(buffer, freezer_state_strs(CGROUP_FROZEN)) == 0)
+	else if (strcmp(buf, freezer_state_strs(CGROUP_FROZEN)) == 0)
 		freeze = true;
 	else
 		return -EINVAL;
 
-	freezer_change_state(css_freezer(css), freeze);
-	return 0;
+	freezer_change_state(css_freezer(of_css(of)), freeze);
+	return nbytes;
 }
 
 static u64 freezer_self_freezing_read(struct cgroup_subsys_state *css,
@@ -476,7 +493,7 @@ static struct cftype files[] = {
 		.name = "state",
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = freezer_read,
-		.write_string = freezer_write,
+		.write = freezer_write,
 	},
 	{
 		.name = "self_freezing",

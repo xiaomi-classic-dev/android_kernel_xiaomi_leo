@@ -76,7 +76,6 @@ extern bool set_freezable(void);
 extern bool cgroup_freezing(struct task_struct *task);
 /* set cgroup state thawed */
 extern void cgroup_thawed_by_pid(int pid_nr);
-extern void freezer_change_state_to_thawed(struct cgroup *cgroup);
 #else /* !CONFIG_CGROUP_FREEZER */
 static inline void cgroup_thawed_by_pid(int pid_nr)
 {
