@@ -1059,6 +1059,11 @@ static void cgroup_put(struct cgroup *cgrp)
 	if (WARN_ON_ONCE(cgrp->parent && !cgroup_is_dead(cgrp)))
 		return;
 
+	/* delete this cgroup from parent->children */
+	mutex_lock(&cgroup_mutex);
+	list_del_rcu(&cgrp->sibling);
+	mutex_unlock(&cgroup_mutex);
+
 	cgroup_idr_remove(&cgrp->root->cgroup_idr, cgrp->id);
 	cgrp->id = -1;
 
@@ -4565,9 +4570,6 @@ static int cgroup_destroy_locked(struct cgroup *cgrp)
 static void cgroup_destroy_css_killed(struct cgroup *cgrp)
 {
 	lockdep_assert_held(&cgroup_mutex);
-
-	/* delete this cgroup from parent->children */
-	list_del_rcu(&cgrp->sibling);
 
 	cgroup_put(cgrp);
 }
