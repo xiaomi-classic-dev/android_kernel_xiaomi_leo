@@ -76,6 +76,10 @@ struct static_key_deferred {
 
 # include <asm/jump_label.h>
 # define HAVE_JUMP_LABEL
+#else
+struct static_key {
+	atomic_t enabled;
+};
 #endif	/* CC_HAVE_ASM_GOTO && CONFIG_JUMP_LABEL */
 
 enum jump_label_type {
@@ -84,6 +88,13 @@ enum jump_label_type {
 };
 
 struct module;
+
+#include <linux/atomic.h>
+
+static inline int static_key_count(struct static_key *key)
+{
+	return atomic_read(&key->enabled);
+}
 
 #ifdef HAVE_JUMP_LABEL
 
@@ -143,12 +154,6 @@ jump_label_rate_limit(struct static_key_deferred *key, unsigned long rl);
 
 #else  /* !HAVE_JUMP_LABEL */
 
-#include <linux/atomic.h>
-
-struct static_key {
-	atomic_t enabled;
-};
-
 static __always_inline void jump_label_init(void)
 {
 	static_key_initialized = true;
@@ -160,14 +165,14 @@ struct static_key_deferred {
 
 static __always_inline bool static_key_false(struct static_key *key)
 {
-	if (unlikely(atomic_read(&key->enabled)) > 0)
+	if (unlikely(static_key_count(key) > 0))
 		return true;
 	return false;
 }
 
 static __always_inline bool static_key_true(struct static_key *key)
 {
-	if (likely(atomic_read(&key->enabled)) > 0)
+	if (likely(static_key_count(key) > 0))
 		return true;
 	return false;
 }
@@ -222,7 +227,7 @@ jump_label_rate_limit(struct static_key_deferred *key,
 
 static inline bool static_key_enabled(struct static_key *key)
 {
-	return (atomic_read(&key->enabled) > 0);
+	return static_key_count(key) > 0;
 }
 
 static inline void static_key_enable(struct static_key *key)
