@@ -10467,7 +10467,7 @@ struct cgroup_subsys cpu_cgrp_subsys = {
 	.attach		= cpu_cgroup_attach,
 	.allow_attach	= subsys_cgroup_allow_attach,
 	.exit		= cpu_cgroup_exit,
-	.base_cftypes	= cpu_files,
+	.legacy_cftypes	= cpu_files,
 	.early_init	= 1,
 };
 
