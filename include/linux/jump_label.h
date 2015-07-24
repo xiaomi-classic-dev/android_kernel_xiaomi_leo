@@ -226,7 +226,9 @@ static inline bool static_key_enabled(struct static_key *key)
 
 static inline void static_key_enable(struct static_key *key)
 {
-	int count = atomic_read(&key->enabled);
+	int count = static_key_count(key);
+
+	WARN_ON_ONCE(count < 0 || count > 1);
 
 	if (!count)
 		static_key_slow_inc(key);
@@ -234,7 +236,9 @@ static inline void static_key_enable(struct static_key *key)
 
 static inline void static_key_disable(struct static_key *key)
 {
-	int count = atomic_read(&key->enabled);
+	int count = static_key_count(key);
+
+	WARN_ON_ONCE(count < 0 || count > 1);
 
 	if (count)
 		static_key_slow_dec(key);
