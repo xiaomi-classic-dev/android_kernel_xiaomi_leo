@@ -217,11 +217,6 @@ jump_label_rate_limit(struct static_key_deferred *key,
 #define STATIC_KEY_INIT STATIC_KEY_INIT_FALSE
 #define jump_label_enabled static_key_enabled
 
-static inline bool static_key_enabled(struct static_key *key)
-{
-	return static_key_count(key) > 0;
-}
-
 static inline void static_key_enable(struct static_key *key)
 {
 	int count = static_key_count(key);
@@ -267,6 +262,17 @@ struct static_key_false {
 
 #define DEFINE_STATIC_KEY_FALSE(name)	\
 	struct static_key_false name = STATIC_KEY_FALSE_INIT
+
+extern bool ____wrong_branch_error(void);
+
+#define static_key_enabled(x)							\
+({										\
+	if (!__builtin_types_compatible_p(typeof(*x), struct static_key) &&	\
+	    !__builtin_types_compatible_p(typeof(*x), struct static_key_true) &&\
+	    !__builtin_types_compatible_p(typeof(*x), struct static_key_false))	\
+		____wrong_branch_error();					\
+	static_key_count((struct static_key *)x) > 0;				\
+})
 
 #ifdef HAVE_JUMP_LABEL
 
@@ -325,8 +331,6 @@ struct static_key_false {
  *
  * See jump_label_type() / jump_label_init_type().
  */
-
-extern bool ____wrong_branch_error(void);
 
 #define static_branch_likely(x)							\
 ({										\
