@@ -1,4 +1,5 @@
 /* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +26,7 @@
 #include <linux/workqueue.h>
 #include <linux/power_supply.h>
 #include "leds.h"
+#include <linux/qpnp/power-on.h>
 
 #define FLASH_LED_PERIPHERAL_SUBTYPE(base)			(base + 0x05)
 #define FLASH_SAFETY_TIMER(base)				(base + 0x40)
@@ -209,6 +211,7 @@ struct qpnp_flash_led {
 	struct pinctrl_state		*gpio_state_active;
 	struct pinctrl_state		*gpio_state_suspend;
 	struct workqueue_struct		*ordered_workq;
+	struct device_node		*pon_dev;
 	struct mutex			flash_led_lock;
 	int				num_leds;
 	u16				base;
@@ -385,7 +388,7 @@ static ssize_t qpnp_flash_led_max_current_show(struct device *dev,
 	struct qpnp_flash_led *led;
 	struct flash_node_data *flash_node;
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
-	int max_curr_avail_ma;
+	int max_curr_avail_ma = 0;
 	flash_node = container_of(led_cdev, struct flash_node_data, cdev);
 	led = dev_get_drvdata(&flash_node->spmi_dev->dev);
 
@@ -591,6 +594,12 @@ static int qpnp_flash_led_module_disable(struct qpnp_flash_led *led,
 				return -EINVAL;
 			}
 		}
+                rc = qpnp_pon_set_rb_spare(led->pon_dev, false);
+                if (rc) {
+                        dev_err(&led->spmi_dev->dev,
+                                "failed to set rb_spare\n");
+                        return -EINVAL;
+                }
 	}
 
 	if (flash_node->trigger & FLASH_LED0_TRIGGER) {
@@ -787,6 +796,12 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	}
 
 	if (flash_node->type == TORCH) {
+		rc = qpnp_pon_set_rb_spare(led->pon_dev, true);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+				"failed to set rb_spare\n");
+			goto exit_flash_led_work;
+		}
 		rc = qpnp_led_masked_write(led->spmi_dev,
 			FLASH_LED_UNLOCK_SECURE(led->base),
 			FLASH_SECURE_MASK, FLASH_UNLOCK_SECURE);
@@ -1880,6 +1895,9 @@ static int qpnp_flash_led_probe(struct spmi_device *spmi)
 	}
 
 	led->num_leds = i;
+	led->pon_dev = of_parse_phandle(node, "qcom,pon-dev", 0);
+	if (!led->pon_dev)
+		pr_err("No pon-dev specified!\n");
 
 	dev_set_drvdata(&spmi->dev, led);
 

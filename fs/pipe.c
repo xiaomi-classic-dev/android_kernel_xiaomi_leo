@@ -2,6 +2,7 @@
  *  linux/fs/pipe.c
  *
  *  Copyright (C) 1991, 1992, 1999  Linus Torvalds
+ *  Copyright (C) 2016 XiaoMi, Inc.
  */
 
 #include <linux/mm.h>
