@@ -51,6 +51,8 @@
 #define ISA1000_VIB_DEFAULT_TIMEOUT	15000
 #define ISA1000_DEFAULT_PWM_FREQ	30000
 
+static int pwm_duty = 0;
+
 static const unsigned int pwm_period_ns = NSEC_PER_SEC / ISA1000_DEFAULT_PWM_FREQ;
 
 struct isa1000_pwm_info {
@@ -82,6 +84,13 @@ static int isa1000_vib_set(struct isa1000_vib *vib, int on)
 	int rc;
 
 	if (on) {
+		rc = pwm_config(vib_dev->pwm_info.pwm_dev,
+						(pwm_period_ns * pwm_duty) / 100,
+						pwm_period_ns);
+		if (rc < 0){
+			pr_err( "Unable to config pwm%d\n",rc);
+		}
+
 		rc = pwm_enable(vib->pwm_info.pwm_dev);
 		if (rc < 0) {
 			dev_err(&vib->pdev->dev, "Unable to enable pwm\n");
@@ -217,6 +226,28 @@ static void isa1000_vib_set_level(int level)
 chip_dwn:
 	gpio_set_value_cansleep(vib_dev->enable_gpio, 0);
 }
+
+static ssize_t vibrator_amp_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", pwm_duty);
+}
+
+static ssize_t vibrator_amp_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+    int gain;
+	sscanf(buf, "%d", &gain);
+
+    if (gain < 0 || gain > 100) gain = 79;
+
+    pwm_duty = gain;
+
+	return size;
+}
+
+static DEVICE_ATTR(amp, S_IRUGO | S_IWUSR, vibrator_amp_show, vibrator_amp_store);
+
 
 static int isa1000_setup(struct isa1000_vib *vib)
 {
@@ -445,6 +476,11 @@ VibeStatus ImmVibeSPI_ForceOut_Initialize(void)
 	if (Ret < 0) {
 		pr_err("isa1000 driver register failed %d\n", Ret);
 		return VIBE_E_FAIL;
+	}
+
+	Ret = device_create_file(vib_dev->timed_dev.dev, &dev_attr_amp);
+	if (Ret < 0) {
+		pr_err("[VIB] %s, create sysfs fail: amp\n", __func__);
 	}
 
 	return VIBE_S_SUCCESS;
