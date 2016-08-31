@@ -1926,7 +1926,7 @@ static void smbchg_parallel_usb_check_ok(struct smbchg_chip *chip)
 	mutex_lock(&chip->parallel.lock);
 	if (smbchg_is_parallel_usb_ok(chip)) {
 		smbchg_stay_awake(chip, PM_PARALLEL_CHECK);
-		schedule_delayed_work(
+		queue_delayed_work(system_power_efficient_wq,
 			&chip->parallel_en_work,
 			msecs_to_jiffies(PARALLEL_CHARGER_EN_DELAY_MS));
 	} else if (chip->parallel.current_max_ma != 0) {
@@ -2863,7 +2863,8 @@ static void smbchg_vfloat_adjust_check(struct smbchg_chip *chip)
 
 	smbchg_stay_awake(chip, PM_REASON_VFLOAT_ADJUST);
 	pr_smb(PR_STATUS, "Starting vfloat adjustments\n");
-	schedule_delayed_work(&chip->vfloat_adjust_work, 0);
+	queue_delayed_work(system_power_efficient_wq,
+				&chip->vfloat_adjust_work, 0);
 }
 
 #define FV_STS_REG			0xC
@@ -3770,8 +3771,9 @@ stop:
 	return;
 
 reschedule:
-	schedule_delayed_work(&chip->vfloat_adjust_work,
-			msecs_to_jiffies(VFLOAT_RESAMPLE_DELAY_MS));
+	queue_delayed_work(system_power_efficient_wq,
+		&chip->vfloat_adjust_work,
+		msecs_to_jiffies(VFLOAT_RESAMPLE_DELAY_MS));
 	return;
 }
 
@@ -4189,7 +4191,8 @@ static void handle_usb_insertion(struct smbchg_chip *chip)
 	}
 
 	if (usb_supply_type == POWER_SUPPLY_TYPE_USB_DCP)
-		schedule_delayed_work(&chip->hvdcp_det_work,
+		queue_delayed_work(system_power_efficient_wq,
+					&chip->hvdcp_det_work,
 					msecs_to_jiffies(HVDCP_NOTIFY_MS));
 	if (parallel_psy) {
 		rc = power_supply_set_present(parallel_psy, true);
