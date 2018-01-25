@@ -65,17 +65,6 @@ typedef void (*__adf_nbuf_callback_fn) (struct sk_buff *skb);
 #define CVG_NBUF_MAX_EXTRA_FRAGS 2
 
 typedef void (*adf_nbuf_trace_update_t)(char *);
-struct nbuf_rx_cb {
-	uint8_t dp_trace:1,
-		    reserved:7;
-	uint8_t packet_trace;
-};
-
-#define ADF_NBUF_CB_RX_DP_TRACE(skb) \
-	(((struct nbuf_rx_cb*)((skb)->cb))->dp_trace)
-
-#define ADF_NBUF_CB_RX_PACKET_TRACE(skb) \
-	(((struct nbuf_rx_cb*)((skb)->cb))->packet_trace)
 
 struct cvg_nbuf_cb {
     /*
@@ -99,10 +88,10 @@ struct cvg_nbuf_cb {
      * Store info for data path tracing
      */
     struct {
-        uint8_t packet_state: 4;
-        uint8_t packet_track: 2;
-        uint8_t dp_trace: 1;
-        uint8_t dp_trace_reserved: 1;
+        uint8_t packet_state:4;
+        uint8_t packet_track:2;
+        uint8_t dp_trace_tx:1;
+        uint8_t dp_trace_rx:1;
     } trace;
 
     /*
@@ -271,7 +260,10 @@ struct cvg_nbuf_cb {
     adf_nbuf_set_state(skb, PACKET_STATE)
 
 #define ADF_NBUF_CB_TX_DP_TRACE(skb) \
-    (((struct cvg_nbuf_cb *)((skb)->cb))->trace.dp_trace)
+    (((struct cvg_nbuf_cb *)((skb)->cb))->trace.dp_trace_tx)
+
+#define ADF_NBUF_CB_RX_DP_TRACE(skb) \
+    (((struct cvg_nbuf_cb *)((skb)->cb))->trace.dp_trace_rx)
 
 #define ADF_NBUF_GET_IS_EAPOL(skb) \
     (((struct cvg_nbuf_cb *)((skb)->cb))->packet_type.is_eapol)
@@ -415,8 +407,8 @@ bool            __adf_nbuf_data_is_ipv4_udp_pkt(uint8_t *data);
 bool            __adf_nbuf_data_is_ipv4_tcp_pkt(uint8_t *data);
 bool            __adf_nbuf_data_is_ipv6_udp_pkt(uint8_t *data);
 bool            __adf_nbuf_data_is_ipv6_tcp_pkt(uint8_t *data);
-a_status_t      __adf_nbuf_data_is_dhcp_pkt(uint8_t *data);
-a_status_t      __adf_nbuf_data_is_eapol_pkt(uint8_t *data);
+bool            __adf_nbuf_data_is_dhcp_pkt(uint8_t *data);
+bool            __adf_nbuf_data_is_eapol_pkt(uint8_t *data);
 bool            __adf_nbuf_data_is_ipv4_arp_pkt(uint8_t *data);
 enum adf_proto_subtype  __adf_nbuf_data_get_dhcp_subtype(uint8_t *data);
 enum adf_proto_subtype  __adf_nbuf_data_get_eapol_subtype(uint8_t *data);

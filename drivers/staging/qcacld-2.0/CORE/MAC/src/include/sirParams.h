@@ -723,7 +723,7 @@ typedef struct sSirMbMsgP2p
 #define SIR_HAL_CONFIG_GUARD_TIME          (SIR_HAL_ITC_MSG_TYPES_BEGIN + 315)
 #define SIR_HAL_SET_PASSPOINT_LIST_REQ     (SIR_HAL_ITC_MSG_TYPES_BEGIN + 316)
 #define SIR_HAL_RESET_PASSPOINT_LIST_REQ   (SIR_HAL_ITC_MSG_TYPES_BEGIN + 317)
-#define SIR_HAL_EXTSCAN_SET_SSID_HOTLIST_REQ   (SIR_HAL_ITC_MSG_TYPES_BEGIN + 318)
+/* 318 unused */
 
 #define SIR_HAL_OCB_SET_CONFIG_CMD          (SIR_HAL_ITC_MSG_TYPES_BEGIN + 319)
 #define SIR_HAL_OCB_SET_UTC_TIME_CMD        (SIR_HAL_ITC_MSG_TYPES_BEGIN + 320)
@@ -733,7 +733,7 @@ typedef struct sSirMbMsgP2p
 #define SIR_HAL_DCC_GET_STATS_CMD           (SIR_HAL_ITC_MSG_TYPES_BEGIN + 324)
 #define SIR_HAL_DCC_CLEAR_STATS_CMD         (SIR_HAL_ITC_MSG_TYPES_BEGIN + 325)
 #define SIR_HAL_DCC_UPDATE_NDL_CMD          (SIR_HAL_ITC_MSG_TYPES_BEGIN + 326)
-#define SIR_HAL_FW_MEM_DUMP_REQ            (SIR_HAL_ITC_MSG_TYPES_BEGIN + 327)
+/* FW Memory Dump feature is deprecated */
 #define SIR_HAL_START_STOP_LOGGING          (SIR_HAL_ITC_MSG_TYPES_BEGIN + 328)
 #define SIR_HAL_EXTSCAN_STATUS_IND          (SIR_HAL_ITC_MSG_TYPES_BEGIN + 329)
 
@@ -822,14 +822,8 @@ typedef struct sSirMbMsgP2p
 
 // Message from Hal to send out a DEL-TS indication
 #define SIR_LIM_DEL_TS_IND                  (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0xE)
-//Message from HAL to send BA global timer timeout
-#define SIR_LIM_ADD_BA_IND                  (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0xF)
-//Indication from HAL to delete all the BA sessions when the BA activity check timer is disabled
-#define SIR_LIM_DEL_BA_ALL_IND                  (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0x10)
 //Indication from HAL to delete Station context
 #define SIR_LIM_DELETE_STA_CONTEXT_IND          (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0x11)
-//Indication from HAL to delete BA
-#define SIR_LIM_DEL_BA_IND                      (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0x12)
 #define SIR_LIM_UPDATE_BEACON                   (SIR_LIM_ITC_MSG_TYPES_BEGIN + 0x13)
 
 

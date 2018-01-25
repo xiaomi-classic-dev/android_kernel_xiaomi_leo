@@ -406,10 +406,11 @@ static int hdd_ocb_register_sta(hdd_adapter_t *adapter)
  *
  * Return: A pointer to the OCB configuration struct, NULL on failure.
  */
-static struct sir_ocb_config *hdd_ocb_config_new(int num_channels,
-						 int num_schedule,
-						 int ndl_chan_list_len,
-						 int ndl_active_state_list_len)
+static
+struct sir_ocb_config *hdd_ocb_config_new(uint32_t num_channels,
+					  uint32_t num_schedule,
+					  uint32_t ndl_chan_list_len,
+					  uint32_t ndl_active_state_list_len)
 {
 	struct sir_ocb_config *ret = 0;
 	uint32_t len;
@@ -903,7 +904,7 @@ static int __wlan_hdd_cfg80211_ocb_set_config(struct wiphy *wiphy,
 	void *def_tx_param = NULL;
 	uint32_t def_tx_param_size = 0;
 	int i;
-	int channel_count, schedule_size;
+	uint32_t channel_count, schedule_size;
 	struct sir_ocb_config *config;
 	int rc = -EINVAL;
 	uint8_t *mac_addr;
@@ -948,10 +949,18 @@ static int __wlan_hdd_cfg80211_ocb_set_config(struct wiphy *wiphy,
 		tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_SCHEDULE_SIZE]);
 
 	/* Get the ndl chan array and the ndl active state array. */
+	if (!tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_NDL_CHANNEL_ARRAY]) {
+		hddLog(LOGE, FL("NDL_CHANNEL_ARRAY is not present"));
+		return -EINVAL;
+	}
 	ndl_chan_list =
 		tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_NDL_CHANNEL_ARRAY];
 	ndl_chan_list_len = (ndl_chan_list ? nla_len(ndl_chan_list) : 0);
 
+	if (!tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_NDL_ACTIVE_STATE_ARRAY]) {
+		hddLog(LOGE, FL("NDL_ACTIVE_STATE_ARRAY is not present"));
+		return -EINVAL;
+	}
 	ndl_active_state_list =
 		tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_NDL_ACTIVE_STATE_ARRAY];
 	ndl_active_state_list_len = (ndl_active_state_list ?
@@ -985,6 +994,10 @@ static int __wlan_hdd_cfg80211_ocb_set_config(struct wiphy *wiphy,
 	config->def_tx_param_size = def_tx_param_size;
 
 	/* Read the channel array */
+	if (!tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_CHANNEL_ARRAY]) {
+		hddLog(LOGE, FL("CHANNEL_ARRAY is not present"));
+		return -EINVAL;
+	}
 	channel_array = tb[QCA_WLAN_VENDOR_ATTR_OCB_SET_CONFIG_CHANNEL_ARRAY];
 	if (!channel_array) {
 		hddLog(LOGE, FL("No channel present"));

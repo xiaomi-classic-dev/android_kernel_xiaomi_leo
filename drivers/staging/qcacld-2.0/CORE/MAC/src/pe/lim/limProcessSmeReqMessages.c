@@ -82,6 +82,10 @@
 #define DEFAULT_PASSIVE_MAX_CHANNEL_TIME    110     // in msecs
 
 #define CONV_MS_TO_US 1024 //conversion factor from ms to us
+
+#define BEACON_INTERVAL_THRESHOLD 50  /* in msecs */
+#define STA_BURST_SCAN_DURATION 120   /* in msecs */
+
 // SME REQ processing function templates
 static void __limProcessSmeStartReq(tpAniSirGlobal, tANI_U32 *);
 static tANI_BOOLEAN __limProcessSmeSysReadyInd(tpAniSirGlobal, tANI_U32 *);
@@ -1302,7 +1306,16 @@ static eHalStatus limSendHalStartScanOffloadReq(tpAniSirGlobal pMac,
     pScanOffloadReq->min_rest_time= pScanReq->min_rest_time;
     pScanOffloadReq->idle_time= pScanReq->idle_time;
 
-
+    for (i = 0; i < pMac->lim.maxBssId; i++) {
+        tpPESession session_entry = peFindSessionBySessionId(pMac,i);
+        if (session_entry &&
+            (eLIM_MLM_LINK_ESTABLISHED_STATE == session_entry->limMlmState) &&
+            (session_entry->beaconParams.beaconInterval
+                                      < BEACON_INTERVAL_THRESHOLD)) {
+            pScanOffloadReq->burst_scan_duration = STA_BURST_SCAN_DURATION;
+            break;
+        }
+    }
     /* for normal scan, the value for p2pScanType should be 0
        always */
     if (pScanReq->p2pSearch)
@@ -2006,9 +2019,7 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
 
 
         /* Store vendor specfic IE for CISCO AP */
-        ieLen = (pSmeJoinReq->bssDescription.length +
-                  sizeof( pSmeJoinReq->bssDescription.length ) -
-                  GET_FIELD_OFFSET( tSirBssDescription, ieFields ));
+        ieLen = GET_IE_LEN_IN_BSS(pSmeJoinReq->bssDescription.length);
 
         vendorIE = cfg_get_vendor_ie_ptr_from_oui(pMac, SIR_MAC_CISCO_OUI,
                     SIR_MAC_CISCO_OUI_SIZE,
@@ -2250,8 +2261,8 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         {
            limExtractApCapability( pMac,
               (tANI_U8 *) psessionEntry->pLimJoinReq->bssDescription.ieFields,
-              limGetIElenFromBssDescription(
-              &psessionEntry->pLimJoinReq->bssDescription),
+              GET_IE_LEN_IN_BSS(
+              psessionEntry->pLimJoinReq->bssDescription.length),
               &psessionEntry->limCurrentBssQosCaps,
               &psessionEntry->limCurrentBssPropCap,
               &pMac->lim.gLimCurrentBssUapsd
@@ -2263,8 +2274,8 @@ __limProcessSmeJoinReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         {
            limExtractApCapability( pMac,
               (tANI_U8 *) psessionEntry->pLimJoinReq->bssDescription.ieFields,
-              limGetIElenFromBssDescription(
-              &psessionEntry->pLimJoinReq->bssDescription),
+              GET_IE_LEN_IN_BSS(
+              psessionEntry->pLimJoinReq->bssDescription.length),
               &psessionEntry->limCurrentBssQosCaps,
               &psessionEntry->limCurrentBssPropCap,
               &psessionEntry->gLimCurrentBssUapsd,
@@ -2613,8 +2624,8 @@ __limProcessSmeReassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     {
         limExtractApCapability( pMac,
             (tANI_U8 *) psessionEntry->pLimReAssocReq->bssDescription.ieFields,
-            limGetIElenFromBssDescription(
-                     &psessionEntry->pLimReAssocReq->bssDescription),
+            GET_IE_LEN_IN_BSS(
+            psessionEntry->pLimReAssocReq->bssDescription.length),
             &psessionEntry->limReassocBssQosCaps,
             &psessionEntry->limReassocBssPropCap,
             &pMac->lim.gLimCurrentBssUapsd
@@ -2626,8 +2637,8 @@ __limProcessSmeReassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     {
         limExtractApCapability(pMac,
             (tANI_U8 *) psessionEntry->pLimReAssocReq->bssDescription.ieFields,
-            limGetIElenFromBssDescription(
-                     &psessionEntry->pLimReAssocReq->bssDescription),
+            GET_IE_LEN_IN_BSS(
+            psessionEntry->pLimReAssocReq->bssDescription.length),
             &psessionEntry->limReassocBssQosCaps,
             &psessionEntry->limReassocBssPropCap,
             &psessionEntry->gLimCurrentBssUapsd,
@@ -2751,13 +2762,6 @@ __limProcessSmeReassocReq(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
           limLog(pMac, LOGP, FL("could not retrieve ListenInterval"));
        }
     }
-
-    /* Delete all BA sessions before Re-Assoc.
-     *  BA frames are class 3 frames and the session
-     *  is lost upon disassociation and reassociation.
-     */
-
-    limDeleteBASessions(pMac, psessionEntry, BA_BOTH_DIRECTIONS);
 
     pMlmReassocReq->listenInterval = (tANI_U16) val;
 
@@ -5255,49 +5259,6 @@ static void __limProcessSmeSetHT2040Mode(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
 }
 #endif
 
-/** -------------------------------------------------------------
-\fn limProcessSmeDelBaPeerInd
-\brief handles indication message from HDD to send delete BA request
-\param   tpAniSirGlobal pMac
-\param   tANI_U32 pMsgBuf
-\return None
--------------------------------------------------------------*/
-void
-limProcessSmeDelBaPeerInd(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
-{
-    tANI_U16            assocId =0;
-    tpSmeDelBAPeerInd   pSmeDelBAPeerInd = (tpSmeDelBAPeerInd)pMsgBuf;
-    tpDphHashNode       pSta;
-    tpPESession         psessionEntry;
-    tANI_U8             sessionId;
-
-
-
-    if(NULL == pSmeDelBAPeerInd)
-        return;
-
-    if ((psessionEntry = peFindSessionByBssid(pMac,pSmeDelBAPeerInd->bssId,&sessionId))==NULL)
-    {
-        limLog(pMac, LOGE,FL("session does not exist for given bssId"));
-        return;
-    }
-    limLog(pMac, LOGW, FL("called with staId = %d, tid = %d, baDirection = %d"),
-              pSmeDelBAPeerInd->staIdx, pSmeDelBAPeerInd->baTID, pSmeDelBAPeerInd->baDirection);
-
-    pSta = dphLookupAssocId(pMac, pSmeDelBAPeerInd->staIdx, &assocId, &psessionEntry->dph.dphHashTable);
-    if( eSIR_SUCCESS != limPostMlmDelBAReq( pMac,
-          pSta,
-          pSmeDelBAPeerInd->baDirection,
-          pSmeDelBAPeerInd->baTID,
-          eSIR_MAC_UNSPEC_FAILURE_REASON,psessionEntry))
-    {
-      limLog( pMac, LOGW,
-          FL( "Failed to post LIM_MLM_DELBA_REQ to " ));
-      if (pSta)
-          limPrintMacAddr(pMac, pSta->staAddr, LOGW);
-    }
-}
-
 // --------------------------------------------------------------------
 /**
  * __limProcessReportMessage
@@ -6249,9 +6210,6 @@ limProcessSmeReqMessages(tpAniSirGlobal pMac, tpSirMsgQ pMsg)
             bufConsumed = FALSE;
             break;
 #endif /* FEATURE_WLAN_ESE && FEATURE_WLAN_ESE_UPLOAD */
-        case eWNI_SME_DEL_BA_PEER_IND:
-            limProcessSmeDelBaPeerInd(pMac, pMsgBuf);
-            break;
         case eWNI_SME_GET_SCANNED_CHANNEL_REQ:
             limProcessSmeGetScanChannelInfo(pMac, pMsgBuf);
             break;
@@ -6760,8 +6718,17 @@ limUpdateIBssPropAddIEs(tpAniSirGlobal pMac, tANI_U8 **pDstData_buff,
         vos_mem_copy(vendor_ie, pModifyIE->pIEBuffer,
                      pModifyIE->ieBufferlength);
     } else {
-        uint16_t new_length = pModifyIE->ieBufferlength + *pDstDataLen;
-        uint8_t *new_ptr = vos_mem_malloc(new_length);
+	uint8_t *new_ptr;
+	uint16_t new_length;
+
+	if (USHRT_MAX - pModifyIE->ieBufferlength < *pDstDataLen) {
+			limLog(pMac,LOGE,FL("U16 overflow due to %d + %d"),
+				pModifyIE->ieBufferlength, *pDstDataLen);
+			return false;
+		}
+
+        new_length = pModifyIE->ieBufferlength + *pDstDataLen;
+        new_ptr = vos_mem_malloc(new_length);
 
         if (NULL == new_ptr) {
             limLog(pMac, LOGE, FL("Memory allocation failed."));
@@ -7135,6 +7102,21 @@ limProcessUpdateAddIEs(tpAniSirGlobal pMac, tANI_U32 *pMsg)
                 tANI_U16 new_length = pUpdateAddIEs->updateIE.ieBufferlength +
                                 psessionEntry->addIeParams.probeRespDataLen;
                 tANI_U8 *new_ptr = vos_mem_malloc(new_length);
+                /* Multiple back to back append commands
+                 * can lead to a huge length.So, check
+                 * for the validity of the length.
+                 */
+                if (psessionEntry->addIeParams.probeRespDataLen >
+                     (USHRT_MAX - pUpdateAddIEs->updateIE.ieBufferlength))
+                {
+                    limLog(pMac, LOGE,
+                           FL("IE Length overflow, curr:%d, new:%d."),
+                           psessionEntry->addIeParams.probeRespDataLen,
+                           pUpdateAddIEs->updateIE.ieBufferlength);
+                    vos_mem_free(pUpdateAddIEs->updateIE.pAdditionIEBuffer);
+                    pUpdateAddIEs->updateIE.pAdditionIEBuffer = NULL;
+                    return;
+                }
                 if (NULL == new_ptr)
                 {
                     limLog(pMac, LOGE, FL("Memory allocation failed."));

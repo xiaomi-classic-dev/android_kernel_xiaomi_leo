@@ -98,7 +98,6 @@ typedef tANI_U8 tSirVersionString[SIR_VERSION_STRING_LEN];
 #define WLAN_EXTSCAN_MAX_BUCKETS                  16
 #define WLAN_EXTSCAN_MAX_HOTLIST_APS              128
 #define WLAN_EXTSCAN_MAX_SIGNIFICANT_CHANGE_APS   64
-#define WLAN_EXTSCAN_MAX_HOTLIST_SSIDS            8
 
 #define NUM_CHAINS_MAX  2
 
@@ -124,7 +123,6 @@ typedef enum
     eSIR_PASSPOINT_NETWORK_FOUND_IND,
     eSIR_EXTSCAN_SET_SSID_HOTLIST_RSP,
     eSIR_EXTSCAN_RESET_SSID_HOTLIST_RSP,
-    eSIR_EXTSCAN_HOTLIST_SSID_MATCH_IND,
 
     /* Keep this last */
     eSIR_EXTSCAN_CALLBACK_TYPE_MAX,
@@ -1721,6 +1719,15 @@ typedef struct sSirSmeDeauthCnf
     tSirMacAddr         bssId;             // AP BSSID
     tSirMacAddr        peerMacAddr;
 } tSirSmeDeauthCnf, *tpSirSmeDeauthCnf;
+
+/* Definition for disconnect done indication */
+typedef struct sSirSmeDisConDoneInd {
+   tANI_U16           messageType;
+   tANI_U16           length;
+   tANI_U8            sessionId;
+   tSirResultCodes    reasonCode;
+   tSirMacAddr        peerMacAddr;
+} tSirSmeDisConDoneInd, *tpSirSmeDisConDoneInd;
 
 /// Definition for stop BSS request message
 typedef struct sSirSmeStopBssReq
@@ -4040,7 +4047,7 @@ typedef struct sSirTxPerTrackingParam
 #define    SIR_IPV4_ADDR_LEN                 4
 #define    SIR_MAC_ADDR_LEN                  6
 #define    SIR_MAX_FILTER_TEST_DATA_LEN       8
-#define    SIR_MAX_NUM_MULTICAST_ADDRESS    240
+#define    SIR_MAX_NUM_MULTICAST_ADDRESS    16
 #define    SIR_MAX_NUM_FILTERS               20
 #define    SIR_MAX_NUM_TESTS_PER_FILTER      10
 
@@ -4404,6 +4411,7 @@ typedef struct sSirActiveModeSetBcnFilterReq
    tANI_U16               messageType;
    tANI_U16               length;
    tANI_U8                seesionId;
+   tSirMacAddr            bssid;
 } tSirSetActiveModeSetBncFilterReq, *tpSirSetActiveModeSetBncFilterReq;
 
 //Reset AP Caps Changed
@@ -4467,6 +4475,7 @@ typedef struct sSirScanOffloadReq {
     tSirP2pScanType p2pScanType;
     tANI_U16 uIEFieldLen;
     tANI_U16 uIEFieldOffset;
+    uint32_t burst_scan_duration;
     tSirChannelList channelList;
     /*-----------------------------
       sSirScanOffloadReq....
@@ -5515,37 +5524,6 @@ typedef struct
 } tSirExtScanResetBssidHotlistReqParams,
   *tpSirExtScanResetBssidHotlistReqParams;
 
-/**
- * struct sir_ssid_hotlist_param - param for SSID Hotlist
- * @ssid: SSID which is being hotlisted
- * @band: Band in which the given SSID should be scanned
- * @rssi_low: Low bound on RSSI
- * @rssi_high: High bound on RSSI
- */
-struct sir_ssid_hotlist_param {
-	tSirMacSSid ssid;
-	uint8_t band;
-	int32_t rssi_low;
-	int32_t rssi_high;
-};
-
-/**
- * struct sir_set_ssid_hotlist_request - set SSID hotlist request struct
- * @request_id: ID of the request
- * @session_id: ID of the session
- * @lost_ssid_sample_size: Number of consecutive scans in which the SSID
- *	must not be seen in order to consider the SSID "lost"
- * @ssid_count: Number of valid entries in the @ssids array
- * @ssids: Array that defines the SSIDs that are in the hotlist
- */
-struct sir_set_ssid_hotlist_request {
-	uint32_t request_id;
-	uint8_t session_id;
-	uint32_t lost_ssid_sample_size;
-	uint32_t ssid_count;
-	struct sir_ssid_hotlist_param ssids[WLAN_EXTSCAN_MAX_HOTLIST_SSIDS];
-};
-
 typedef struct
 {
     tANI_U32              requestId;
@@ -5654,6 +5632,7 @@ struct wifi_epno_params
 	struct wifi_epno_network networks[];
 };
 
+#define SIR_PASSPOINT_LIST_MAX_NETWORKS 8
 #define SIR_PASSPOINT_REALM_LEN 256
 #define SIR_PASSPOINT_ROAMING_CONSORTIUM_ID_NUM 16
 #define SIR_PASSPOINT_PLMN_LEN 3
@@ -6562,61 +6541,6 @@ struct sir_guard_time_request {
 
 /* Max number of rates allowed in Supported Rates IE */
 #define MAX_NUM_SUPPORTED_RATES (8)
-
-#define MAX_NUM_FW_SEGMENTS 4
-
-/**
- * struct fw_dump_seg_req - individual segment details
- * @seg_id - segment id.
- * @seg_start_addr_lo - lower address of the segment.
- * @seg_start_addr_hi - higher address of the segment.
- * @seg_length - length of the segment.
- * @dst_addr_lo - lower address of the destination buffer.
- * @dst_addr_hi - higher address of the destination buffer.
- *
- * This structure carries the information to firmware about the
- * individual segments. This structure is part of firmware memory
- * dump request.
- */
-struct fw_dump_seg_req
-{
-	uint8_t seg_id;
-	uint32_t seg_start_addr_lo;
-	uint32_t seg_start_addr_hi;
-	uint32_t seg_length;
-	uint32_t dst_addr_lo;
-	uint32_t dst_addr_hi;
-};
-
-/**
- * struct fw_dump_req - firmware memory dump request details.
- * @request_id - request id.
- * @num_seg - requested number of segments.
- * @fw_dump_seg_req - individual segment information.
- *
- * This structure carries information about the firmware
- * memory dump request.
- */
-struct fw_dump_req
-{
-	uint32_t request_id;
-	uint32_t num_seg;
-	struct fw_dump_seg_req segment[MAX_NUM_FW_SEGMENTS];
-};
-
-/**
- * struct fw_dump_rsp - firmware dump response details.
- * @request_id - request id.
- * @dump_complete - copy completion status.
- *
- * This structure is used to store the firmware dump copy complete
- * response from the firmware.
- */
-struct fw_dump_rsp
-{
-	uint32_t request_id;
-	uint32_t dump_complete;
-};
 
 /**
  * struct vdev_ie_info - IE info

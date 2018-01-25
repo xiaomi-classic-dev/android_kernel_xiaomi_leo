@@ -131,7 +131,7 @@ uint16_t wmi_get_max_msg_len(wmi_unified_t wmi_handle)
 }
 
 wmi_buf_t
-wmi_buf_alloc(wmi_unified_t wmi_handle, u_int16_t len)
+wmi_buf_alloc(wmi_unified_t wmi_handle, uint32_t len)
 {
 	wmi_buf_t wmi_buf;
 
@@ -754,6 +754,8 @@ static uint16_t wmi_tag_sta_powersave_cmd(wmi_unified_t wmi_hdl, wmi_buf_t buf)
 	ps_cmd = (wmi_sta_powersave_param_cmd_fixed_param *)wmi_buf_data(buf);
 
 	switch(ps_cmd->param) {
+	case WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD:
+	case WMI_STA_PS_PARAM_INACTIVITY_TIME:
 	case WMI_STA_PS_ENABLE_QPOWER:
 		return HTC_TX_PACKET_TAG_AUTO_PM;
 	default:
@@ -786,6 +788,12 @@ static uint16_t wmi_tag_common_cmd(wmi_unified_t wmi_hdl, wmi_buf_t buf,
 static uint16_t wmi_tag_fw_hang_cmd(wmi_unified_t wmi_handle)
 {
 	uint16_t tag = 0;
+
+	if (adf_os_atomic_read(&wmi_handle->is_target_suspended)) {
+		pr_err("%s: Target is already suspended, Ignore FW Hang Command\n",
+			__func__);
+		return tag;
+	}
 
 	if (wmi_handle->tag_crash_inject)
 		tag = HTC_TX_PACKET_TAG_AUTO_PM;

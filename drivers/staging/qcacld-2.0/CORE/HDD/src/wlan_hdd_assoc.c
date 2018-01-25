@@ -1683,7 +1683,7 @@ void hdd_sap_restart_handle(struct work_struct *work)
         wlan_hdd_restart_sap(sap_adapter);
         hdd_change_ch_avoidance_status(hdd_ctx, false);
     } else {
-        wlan_hdd_start_sap(sap_adapter);
+        wlan_hdd_start_sap(sap_adapter, false);
         hdd_change_sap_restart_required_status(hdd_ctx, false);
     }
     vos_ssr_unprotect(__func__);
@@ -1827,7 +1827,12 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
 #ifdef FEATURE_WLAN_AUTO_SHUTDOWN
         wlan_hdd_auto_shutdown_enable(pHddCtx, VOS_FALSE);
 #endif
-
+        /* validate cfg_ini */
+        if (!pHddCtx->cfg_ini) {
+                VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                          "cfg_ini is NULL");
+                return eHAL_STATUS_E_NULL_VALUE;
+        }
 #ifdef FEATURE_WLAN_MCC_TO_SCC_SWITCH
         if ((pHddCtx->cfg_ini->WlanMccToSccSwitchMode
                 != VOS_MCC_TO_SCC_SWITCH_DISABLE) &&
@@ -3226,7 +3231,6 @@ hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
                     pHddCtx->tdlsConnInfo[staIdx].sessionId = 255;
                     vos_mem_zero(&pHddCtx->tdlsConnInfo[staIdx].peerMac,
                                                sizeof(v_MACADDR_t)) ;
-                    wlan_hdd_tdls_check_bmps(pAdapter);
                     status = eHAL_STATUS_SUCCESS ;
                     break ;
                 }
@@ -3234,6 +3238,12 @@ hdd_RoamTdlsStatusUpdateHandler(hdd_adapter_t *pAdapter,
             complete(&pAdapter->tdls_del_station_comp);
         }
         break ;
+        case  eCSR_ROAM_TDLS_CHECK_BMPS:
+        {
+            wlan_hdd_tdls_check_bmps(pAdapter);
+            status = eHAL_STATUS_SUCCESS ;
+            break;
+        }
         case eCSR_ROAM_RESULT_TEARDOWN_TDLS_PEER_IND:
         {
             VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
@@ -4011,7 +4021,8 @@ hdd_smeRoamCallback(void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U32 roamId,
                 /* Call to clear any MC Addr List filter applied after
                  * successful connection.
                  */
-                wlan_hdd_set_mc_addr_list(pAdapter, FALSE);
+                if (wlan_hdd_set_mc_addr_list(pAdapter, FALSE))
+                    hddLog(VOS_TRACE_LEVEL_ERROR, FL("failed to clear mc addr list"));
 #endif
             }
             break;
@@ -4179,6 +4190,7 @@ hdd_smeRoamCallback(void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U32 roamId,
         case eCSR_ROAM_RESULT_MGMT_TX_COMPLETE_IND:
             wlan_hdd_tdls_mgmt_completion_callback(pAdapter, pRoamInfo->reasonCode);
             break;
+
 #endif
 #ifdef WLAN_FEATURE_11W
        case eCSR_ROAM_UNPROT_MGMT_FRAME_IND:

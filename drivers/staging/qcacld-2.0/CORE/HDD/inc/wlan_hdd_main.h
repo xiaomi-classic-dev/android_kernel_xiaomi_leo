@@ -1785,14 +1785,7 @@ struct hdd_context_s
     struct hdd_ll_stats_context ll_stats_context;
 #endif /* End of WLAN_FEATURE_LINK_LAYER_STATS */
 
-#ifdef WLAN_FEATURE_MEMDUMP
-    uint8_t *fw_dump_loc;
-    uint32_t dump_loc_paddr;
-    vos_timer_t memdump_cleanup_timer;
     struct mutex memdump_lock;
-    bool memdump_in_progress;
-    bool memdump_init_done;
-#endif /* WLAN_FEATURE_MEMDUMP */
     uint16_t driver_dump_size;
     uint8_t *driver_dump_mem;
 
@@ -1844,6 +1837,7 @@ struct hdd_context_s
     uint8_t max_mc_addr_list;
     struct acs_dfs_policy acs_policy;
     uint8_t max_peers;
+    uint8_t hdd_dfs_regdomain;
 };
 
 /*---------------------------------------------------------------------------
@@ -2046,10 +2040,10 @@ VOS_STATUS wlan_hdd_check_custom_con_channel_rules(hdd_adapter_t *sta_adapter,
                                               bool *concurrent_chnl_same);
 #ifdef WLAN_FEATURE_MBSSID
 void wlan_hdd_stop_sap(hdd_adapter_t *ap_adapter);
-void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter);
+void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter, bool reinit);
 #else
 static inline void wlan_hdd_stop_sap(hdd_adapter_t *ap_adapter) {}
-static inline void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter) {}
+static inline void wlan_hdd_start_sap(hdd_adapter_t *ap_adapter, bool reinit) {}
 #endif
 int wlan_hdd_get_link_speed(hdd_adapter_t *sta_adapter, uint32_t *link_speed);
 int hdd_wlan_go_set_mcc_p2p_quota(hdd_adapter_t *hostapd_adapter,
@@ -2093,8 +2087,6 @@ static inline void hdd_init_ll_stats_ctx(hdd_context_t *hdd_ctx)
 void hdd_get_fw_version(hdd_context_t *hdd_ctx,
 			uint32_t *major_spid, uint32_t *minor_spid,
 			uint32_t *siid, uint32_t *crmid);
-
-bool hdd_is_memdump_supported(void);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28))
 static inline void
@@ -2251,4 +2243,17 @@ void hdd_sap_restart_handle(struct work_struct *work);
 void hdd_set_rps_cpu_mask(hdd_context_t *hdd_ctx);
 void hdd_initialize_adapter_common(hdd_adapter_t *adapter);
 void hdd_svc_fw_shutdown_ind(struct device *dev);
+
+/**
+ * hdd_drv_cmd_validate() - Validates for space in hdd driver command
+ * @command: pointer to input data (its a NULL terminated string)
+ * @len: length of command name
+ *
+ * This function checks for space after command name and if no space
+ * is found returns error.
+ *
+ * Return: 0 for success non-zero for failure
+ */
+int hdd_drv_cmd_validate(tANI_U8 *command, int len);
+
 #endif    // end #if !defined( WLAN_HDD_MAIN_H )

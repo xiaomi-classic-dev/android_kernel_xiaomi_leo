@@ -106,7 +106,7 @@
 #define WMA_MAX_VDEV_SIZE				20
 #define WMA_VDEV_TBL_ENTRY_ADD				1
 #define WMA_VDEV_TBL_ENTRY_DEL				0
-
+#define WMA_SVC_MSG_MAX_SIZE                            1536
 
 /* 11A/G channel boundary */
 #define WMA_11A_CHANNEL_BEGIN           34
@@ -596,6 +596,10 @@ struct wma_txrx_node {
 	v_BOOL_t vdev_up;
 	u_int64_t tsfadjust;
 	void     *addBssStaContext;
+	/* Have a back up of arp offload req */
+	tSirHostOffloadReq arp_offload_req;
+	/* tSirHostOffloadReq of ns offload req */
+	tSirHostOffloadReq ns_offload_req;
 	tANI_U8 aid;
 	/* Robust Management Frame (RMF) enabled/disabled */
 	tANI_U8 rmfEnabled;
@@ -789,10 +793,6 @@ typedef struct wma_handle {
 	u_int8_t no_of_suspend_ind;
 	u_int8_t no_of_resume_ind;
 
-	/* Have a back up of arp info to send along
-	 * with ns info suppose if ns also enabled
-	 */
-	tSirHostOffloadReq mArpInfo;
 	struct wma_tx_ack_work_ctx *ack_work_ctx;
 	u_int8_t powersave_mode;
 	v_BOOL_t ptrn_match_enable_all_vdev;
@@ -922,6 +922,7 @@ typedef struct wma_handle {
 	struct wma_runtime_pm_context runtime_context;
 	uint32_t fine_time_measurement_cap;
 	bool bpf_enabled;
+	bool bpf_packet_filter_enable;
 	bool pause_other_vdev_on_mcc_start;
 
 	/* NAN datapath support enabled in firmware */
@@ -1378,6 +1379,7 @@ struct wma_set_key_params {
 	u_int32_t key_idx;
 	bool unicast;
 	u_int8_t key_data[SIR_MAC_MAX_KEY_LENGTH];
+	u_int8_t key_rsc[SIR_MAC_MAX_KEY_RSC_LEN];
 };
 
 typedef struct {

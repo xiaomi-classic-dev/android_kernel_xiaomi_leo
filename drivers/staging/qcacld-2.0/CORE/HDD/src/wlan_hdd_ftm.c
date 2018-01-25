@@ -955,7 +955,8 @@ static int wlan_hdd_qcmbr_command(hdd_adapter_t *pAdapter, qcmbr_data_t *pqcmbr_
     switch (pqcmbr_data->cmd) {
         case ATH_XIOCTL_UNIFIED_UTF_CMD: {
             pqcmbr_data->copy_to_user = 0;
-            if (pqcmbr_data->length) {
+            if (pqcmbr_data->length &&
+                pqcmbr_data->length <= sizeof(pqcmbr_data->buf)) {
                 if (wlan_hdd_ftm_testmode_cmd(pqcmbr_data->buf,
                                               pqcmbr_data->length,
                                               TRUE)
@@ -1074,8 +1075,10 @@ static void WLANQCMBR_McProcessMsg(v_VOID_t *message)
     u_int32_t data_len;
 
     data_len = *((u_int32_t *)message) + sizeof(u_int32_t);
-    qcmbr_buf = kzalloc(sizeof(qcmbr_queue_t), GFP_KERNEL);
+    if (data_len > MAX_UTF_LENGTH + 4)
+        return;
 
+    qcmbr_buf = kzalloc(sizeof(qcmbr_queue_t), GFP_KERNEL);
     if (qcmbr_buf != NULL) {
         memcpy(qcmbr_buf->utf_buf, message, data_len);
         spin_lock_bh(&qcmbr_queue_lock);

@@ -82,14 +82,12 @@ static int pktlog_attach(struct ol_softc *sc);
 static void pktlog_detach(struct ol_softc *sc);
 static int pktlog_open(struct inode *i, struct file *f);
 static int pktlog_release(struct inode *i, struct file *f);
-static int pktlog_mmap(struct file *f, struct vm_area_struct *vma);
 static ssize_t pktlog_read(struct file *file, char *buf, size_t nbytes,
 			   loff_t * ppos);
 
 static struct file_operations pktlog_fops = {
 	open:pktlog_open,
 	release:pktlog_release,
-	mmap:pktlog_mmap,
 	read:pktlog_read,
 };
 
@@ -122,6 +120,7 @@ int pktlog_alloc_buf(struct ol_softc *scn)
 	unsigned long vaddr;
 	struct page *vpg;
 	struct ath_pktlog_info *pl_info;
+	struct ath_pktlog_buf *buffer;
 
 	if (!scn || !scn->pdev_txrx_handle->pl_dev) {
 		printk(PKTLOG_TAG
@@ -135,19 +134,28 @@ int pktlog_alloc_buf(struct ol_softc *scn)
 
 	page_cnt = (sizeof(*(pl_info->buf)) + pl_info->buf_size) / PAGE_SIZE;
 
-	if ((pl_info->buf = vmalloc((page_cnt + 2) * PAGE_SIZE)) == NULL) {
+	spin_lock_bh(&pl_info->log_lock);
+	if(pl_info->buf != NULL) {
+		printk("Buffer is already in use\n");
+		spin_unlock_bh(&pl_info->log_lock);
+		return -EINVAL;
+	}
+	spin_unlock_bh(&pl_info->log_lock);
+
+	if ((buffer = vmalloc((page_cnt + 2) * PAGE_SIZE)) == NULL) {
 		printk(PKTLOG_TAG
 		       "%s: Unable to allocate buffer "
 		       "(%d pages)\n", __func__, page_cnt);
 		return -ENOMEM;
 	}
 
-	pl_info->buf = (struct ath_pktlog_buf *)
-			(((unsigned long) (pl_info->buf) + PAGE_SIZE - 1)
+
+	buffer = (struct ath_pktlog_buf *)
+			(((unsigned long) (buffer) + PAGE_SIZE - 1)
 			& PAGE_MASK);
 
-	for (vaddr = (unsigned long) (pl_info->buf);
-	     vaddr < ((unsigned long) (pl_info->buf) + (page_cnt * PAGE_SIZE));
+	for (vaddr = (unsigned long) (buffer);
+	     vaddr < ((unsigned long) (buffer) + (page_cnt * PAGE_SIZE));
 	     vaddr += PAGE_SIZE) {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 		vpg = vmalloc_to_page((const void *) vaddr);
@@ -157,6 +165,12 @@ int pktlog_alloc_buf(struct ol_softc *scn)
 		SetPageReserved(vpg);
 	}
 
+	spin_lock_bh(&pl_info->log_lock);
+	if(pl_info->buf != NULL)
+		pktlog_release_buf(scn);
+
+	pl_info->buf =  buffer;
+	spin_unlock_bh(&pl_info->log_lock);
 	return 0;
 }
 
@@ -200,6 +214,7 @@ pktlog_cleanup(struct ath_pktlog_info *pl_info)
 {
 	pl_info->log_state = 0;
 	PKTLOG_LOCK_DESTROY(pl_info);
+	mutex_destroy(&pl_info->pktlog_mutex);
 }
 
 /* sysctl procfs handler to enable pktlog */
@@ -548,10 +563,12 @@ static void pktlog_detach(struct ol_softc *scn)
 	pl_info = pl_dev->pl_info;
 	remove_proc_entry(WLANDEV_BASENAME, g_pktlog_pde);
 	pktlog_sysctl_unregister(pl_dev);
-	pktlog_cleanup(pl_info);
 
+	spin_lock_bh(&pl_info->log_lock);
 	if (pl_info->buf)
 		pktlog_release_buf(scn);
+	spin_unlock_bh(&pl_info->log_lock);
+	pktlog_cleanup(pl_info);
 
 	if (pl_dev) {
 		vos_mem_free(pl_info);
@@ -601,12 +618,16 @@ pktlog_read_proc_entry(char *buf, size_t nbytes, loff_t *ppos,
 	int rem_len;
 	int start_offset, end_offset;
 	int fold_offset, ppos_data, cur_rd_offset, cur_wr_offset;
-	struct ath_pktlog_buf *log_buf = pl_info->buf;
+	struct ath_pktlog_buf *log_buf;
+
+	spin_lock_bh(&pl_info->log_lock);
+	log_buf = pl_info->buf;
 
 	*read_complete = false;
 
 	if (log_buf == NULL) {
 		*read_complete = true;
+		spin_unlock_bh(&pl_info->log_lock);
 		return 0;
 	}
 
@@ -709,7 +730,6 @@ rd_done:
 	*ppos += ret_val;
 
 	if (ret_val == 0) {
-		PKTLOG_LOCK(pl_info);
 		/* Write pointer might have been updated during the read.
 		 * So, if some data is written into, lets not reset the pointers.
 		 * We can continue to read from the offset position
@@ -723,14 +743,13 @@ rd_done:
 			pl_info->buf->offset = PKTLOG_READ_OFFSET;
 			*read_complete = true;
 		}
-		PKTLOG_UNLOCK(pl_info);
 	}
-
+	spin_unlock_bh(&pl_info->log_lock);
 	return ret_val;
 }
 
 static ssize_t
-pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
+__pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
 {
 	size_t bufhdr_size;
 	size_t count = 0, ret_val = 0;
@@ -745,10 +764,15 @@ pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
 	struct ath_pktlog_info *pl_info = (struct ath_pktlog_info *)
 					  proc_entry->data;
 #endif
-	struct ath_pktlog_buf *log_buf = pl_info->buf;
+	struct ath_pktlog_buf *log_buf;
 
-	if (log_buf == NULL)
+	spin_lock_bh(&pl_info->log_lock);
+	log_buf = pl_info->buf;
+
+	if (log_buf == NULL) {
+		spin_unlock_bh(&pl_info->log_lock);
 		return 0;
+	}
 
 	if (*ppos == 0 && pl_info->log_state) {
 		pl_info->saved_state = pl_info->log_state;
@@ -763,11 +787,13 @@ pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
 
 	if (*ppos < bufhdr_size) {
 		count = MIN((bufhdr_size - *ppos), rem_len);
+		spin_unlock_bh(&pl_info->log_lock);
 		if (copy_to_user(buf, ((char *)&log_buf->bufhdr) + *ppos,
 				 count))
 			return -EFAULT;
 		rem_len -= count;
 		ret_val += count;
+		spin_lock_bh(&pl_info->log_lock);
 	}
 
 	start_offset = log_buf->rd_offset;
@@ -809,21 +835,25 @@ pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
 			goto rd_done;
 
 		count = MIN(rem_len, (end_offset - ppos_data + 1));
+		spin_unlock_bh(&pl_info->log_lock);
 		if (copy_to_user(buf + ret_val,
 				 log_buf->log_data + ppos_data,
 				 count))
 			return -EFAULT;
 		ret_val += count;
 		rem_len -= count;
+		spin_lock_bh(&pl_info->log_lock);
 	} else {
 		if (ppos_data <= fold_offset) {
 			count = MIN(rem_len, (fold_offset - ppos_data + 1));
+			spin_unlock_bh(&pl_info->log_lock);
 			if (copy_to_user(buf + ret_val,
 					 log_buf->log_data + ppos_data,
 					 count))
 				return -EFAULT;
 			ret_val += count;
 			rem_len -= count;
+			spin_lock_bh(&pl_info->log_lock);
 		}
 
 		if (rem_len == 0)
@@ -835,12 +865,14 @@ pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
 
 		if (ppos_data <= end_offset) {
 			count = MIN(rem_len, (end_offset - ppos_data + 1));
+			spin_unlock_bh(&pl_info->log_lock);
 			if (copy_to_user(buf + ret_val,
 					 log_buf->log_data + ppos_data,
 					 count))
 				return -EFAULT;
 			ret_val += count;
 			rem_len -= count;
+			spin_lock_bh(&pl_info->log_lock);
 		}
 	}
 
@@ -851,6 +883,25 @@ rd_done:
 	}
 	*ppos += ret_val;
 
+	spin_unlock_bh(&pl_info->log_lock);
+	return ret_val;
+}
+
+static ssize_t
+pktlog_read(struct file *file, char *buf, size_t nbytes, loff_t *ppos)
+{
+	size_t ret_val = 0;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
+	struct ath_pktlog_info *pl_info = (struct ath_pktlog_info *)
+					  PDE_DATA(file->f_path.dentry->d_inode);
+#else
+	struct proc_dir_entry *proc_entry = PDE(file->f_dentry->d_inode);
+	struct ath_pktlog_info *pl_info = (struct ath_pktlog_info *)
+					  proc_entry->data;
+#endif
+	mutex_lock(&pl_info->pktlog_mutex);
+	ret_val = __pktlog_read(file, buf, nbytes, ppos);
+	mutex_unlock(&pl_info->pktlog_mutex);
 	return ret_val;
 }
 
@@ -902,106 +953,6 @@ static volatile void *pktlog_virt_to_logical(volatile void *addr)
 	return (volatile void *)ret;
 }
 #endif
-
-/* vma operations for mapping vmalloced area to user space */
-static void pktlog_vopen(struct vm_area_struct *vma)
-{
-	PKTLOG_MOD_INC_USE_COUNT;
-}
-
-static void pktlog_vclose(struct vm_area_struct *vma)
-{
-	PKTLOG_MOD_DEC_USE_COUNT;
-}
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,25)
-int pktlog_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
-{
-	unsigned long address = (unsigned long)vmf->virtual_address;
-
-	if (address == 0UL)
-		return VM_FAULT_NOPAGE;
-
-	if (vmf->pgoff > vma->vm_end)
-		return VM_FAULT_SIGBUS;
-
-	get_page(virt_to_page((void *)address));
-	vmf->page = virt_to_page((void *)address);
-	return VM_FAULT_MINOR;
-}
-#else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-struct page *pktlog_vmmap(struct vm_area_struct *vma, unsigned long addr,
-			  int *type)
-#else
-struct page *pktlog_vmmap(struct vm_area_struct *vma, unsigned long addr,
-			  int write_access)
-#endif
-{
-	unsigned long offset, vaddr;
-	struct proc_dir_entry *proc_entry;
-	struct ath_pktlog_info *pl_info =
-
-	proc_entry = PDE(vma->vm_file->f_dentry->d_inode);
-	pl_info = (struct ath_pktlog_info *)proc_entry->data;
-
-	offset = addr - vma->vm_start + (vma->vm_pgoff << PAGE_SHIFT);
-	vaddr = (unsigned long) pktlog_virt_to_logical(
-					(void *)(pl_info->buf) + offset);
-
-	if (vaddr == 0UL) {
-		printk(PKTLOG_TAG "%s: page fault out of range\n", __func__);
-		return ((struct page *) 0UL);
-	}
-
-	/* increment the usage count of the page */
-	get_page(virt_to_page((void*)vaddr));
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0)
-	if (type)
-		*type = VM_FAULT_MINOR;
-#endif
-
-	return virt_to_page((void *)vaddr);
-}
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2,6,25) */
-
-static struct vm_operations_struct pktlog_vmops = {
-	open:pktlog_vopen,
-	close:pktlog_vclose,
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,25)
-	fault:pktlog_fault,
-#else
-	nopage:pktlog_vmmap,
-#endif
-};
-
-static int pktlog_mmap(struct file *file, struct vm_area_struct *vma)
-{
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0)
-	struct ath_pktlog_info *pl_info = (struct ath_pktlog_info *)
-					  PDE_DATA(file->f_path.dentry->d_inode);
-#else
-	struct proc_dir_entry *proc_entry = PDE(file->f_dentry->d_inode);
-	struct ath_pktlog_info *pl_info = (struct ath_pktlog_info *)
-					  proc_entry->data;
-#endif
-
-	if (vma->vm_pgoff != 0) {
-		/* Entire buffer should be mapped */
-		return -EINVAL;
-	}
-
-	if (!pl_info->buf) {
-		printk(PKTLOG_TAG "%s: Log buffer unavailable\n", __func__);
-		return -ENOMEM;
-	}
-
-	vma->vm_flags |= VM_LOCKED;
-	vma->vm_ops = &pktlog_vmops;
-	pktlog_vopen(vma);
-	return 0;
-}
 
 int pktlogmod_init(void *context)
 {

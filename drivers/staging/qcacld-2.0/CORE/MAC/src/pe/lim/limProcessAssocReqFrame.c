@@ -278,7 +278,15 @@ limProcessAssocReqFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,
         WDA_GET_RX_MPDU_DATA(pRxPacketInfo), framelen);
         return;
     }
-
+    if (psessionEntry->limMlmState == eLIM_MLM_WT_DEL_BSS_RSP_STATE) {
+        limLog(pMac, LOGE, FL("drop ASSOC REQ on sessionid: %d "
+              "role=%d from: "MAC_ADDRESS_STR" in limMlmState %d"),
+              psessionEntry->peSessionId,
+              GET_LIM_SYSTEM_ROLE(psessionEntry),
+              MAC_ADDR_ARRAY(pHdr->sa),
+              eLIM_MLM_WT_DEL_BSS_RSP_STATE);
+        return;
+    }
     /*
      * If a STA is already present in DPH and it
      * is initiating a Assoc re-transmit, do not
@@ -742,10 +750,18 @@ limProcessAssocReqFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,
                 if(pAssocReq->rsn.length)
                 {
                     // Unpack the RSN IE
-                    dot11fUnpackIeRSN(pMac,
+                    if (dot11fUnpackIeRSN(pMac,
                                         &pAssocReq->rsn.info[0],
                                         pAssocReq->rsn.length,
-                                        &Dot11fIERSN);
+                                        &Dot11fIERSN) != DOT11F_PARSE_SUCCESS)
+                    {
+                        limLog(pMac, LOG1,
+                            FL("Invalid RSNIE received"));
+                        limSendAssocRspMgmtFrame(pMac,
+                            eSIR_MAC_INVALID_RSN_IE_CAPABILITIES_STATUS,
+                            1, pHdr->sa, subType, 0,psessionEntry);
+                        goto error;
+                    }
 
                     /* Check RSN version is supported or not */
                     if(SIR_MAC_OUI_VERSION_1 == Dot11fIERSN.version)
@@ -811,10 +827,17 @@ limProcessAssocReqFrame(tpAniSirGlobal pMac, tANI_U8 *pRxPacketInfo,
                 // Unpack the WPA IE
                 if(pAssocReq->wpa.length)
                 {
-                    dot11fUnpackIeWPA(pMac,
+                    if (dot11fUnpackIeWPA(pMac,
                                         &pAssocReq->wpa.info[4], //OUI is not taken care
                                         pAssocReq->wpa.length,
-                                        &Dot11fIEWPA);
+                                        &Dot11fIEWPA) != DOT11F_PARSE_SUCCESS)
+                    {
+                        limLog(pMac, LOGE, FL("Invalid WPA IE"));
+                        limSendAssocRspMgmtFrame(pMac,
+                                eSIR_MAC_INVALID_INFORMATION_ELEMENT_STATUS,
+                                1, pHdr->sa, subType, 0,psessionEntry);
+                        goto error;
+                    }
                     /* check the groupwise and pairwise cipher suites */
                     if(eSIR_SUCCESS != (status = limCheckRxWPAIeMatch(pMac, Dot11fIEWPA, psessionEntry, pAssocReq->HTCaps.present)))
                     {

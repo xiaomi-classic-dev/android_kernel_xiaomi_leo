@@ -2198,7 +2198,7 @@ typedef enum
 #define CFG_TDLS_EXTERNAL_CONTROL                   "gTDLSExternalControl"
 #define CFG_TDLS_EXTERNAL_CONTROL_MIN               (0)
 #define CFG_TDLS_EXTERNAL_CONTROL_MAX               (1)
-#define CFG_TDLS_EXTERNAL_CONTROL_DEFAULT           (0)
+#define CFG_TDLS_EXTERNAL_CONTROL_DEFAULT           (1)
 
 #define CFG_TDLS_OFF_CHANNEL_SUPPORT_ENABLE          "gEnableTDLSOffChannel"
 #define CFG_TDLS_OFF_CHANNEL_SUPPORT_ENABLE_MIN      (0)
@@ -2685,12 +2685,16 @@ This feature requires the dependent cfg.ini "gRoamPrefer5GHz" set to 1 */
  * 0x1 - Enable mgmt pkt logs (no probe req/rsp).
  * 0x2 - Enable EAPOL pkt logs.
  * 0x4 - Enable DHCP pkt logs.
+ * 0x8 - Enable mgmt. action pkt logs.
+ * 0x10 - Enable ARP packet logs.
+ * 0x20 - Enable ICMPv6 NS packet logs.
+ * 0x40 - Enable ICMPv6 NA packet logs.
  * 0x0 - Disable all the above connection related logs.
  */
 #define CFG_ENABLE_DEBUG_CONNECT_ISSUE             "gEnableDebugLog"
 #define CFG_ENABLE_DEBUG_CONNECT_ISSUE_MIN         (0)
 #define CFG_ENABLE_DEBUG_CONNECT_ISSUE_MAX         (0xFF)
-#define CFG_ENABLE_DEBUG_CONNECT_ISSUE_DEFAULT     (6)
+#define CFG_ENABLE_DEBUG_CONNECT_ISSUE_DEFAULT     (0x76)
 
 /*
  * RX packet handling options
@@ -3927,10 +3931,10 @@ enum dot11p_mode {
 #define CFG_TGT_GTX_USR_CFG_MAX       (32)
 #define CFG_TGT_GTX_USR_CFG_DEFAULT   (32)
 
-#define CFG_CH_AVOID_SAP_RESTART_NAME    "sap_ch_avoid_restart"
-#define CFG_CH_AVOID_SAP_RESTART_MIN     (0)
-#define CFG_CH_AVOID_SAP_RESTART_MAX     (1)
-#define CFG_CH_AVOID_SAP_RESTART_DEFAULT (0)
+#define CFG_SAP_INTERNAL_RESTART_NAME    "gEnableSapInternalRestart"
+#define CFG_SAP_INTERNAL_RESTART_MIN     (0)
+#define CFG_SAP_INTERNAL_RESTART_MAX     (1)
+#define CFG_SAP_INTERNAL_RESTART_DEFAULT (1)
 
 /*
  * This parameter will help to debug ssr reinit failure issues
@@ -3990,6 +3994,15 @@ enum dot11p_mode {
 #define CFG_SIFS_BURST_DURATION_MIN      (0)
 #define CFG_SIFS_BURST_DURATION_MAX      (12)
 #define CFG_SIFS_BURST_DURATION_DEFAULT  (8)
+
+/*
+ * 0: Disable BPF packet filter
+ * 1: Enable BPF packet filter
+ */
+#define CFG_BPF_PACKET_FILTER_OFFLOAD           "gBpfFilterEnable"
+#define CFG_BPF_PACKET_FILTER_OFFLOAD_MIN       (0)
+#define CFG_BPF_PACKET_FILTER_OFFLOAD_MAX       (1)
+#define CFG_BPF_PACKET_FILTER_OFFLOAD_DEFAULT   (1)
 
 /*---------------------------------------------------------------------------
   Type declarations
@@ -4766,7 +4779,7 @@ struct hdd_config {
 
    /* parameter to control GTX */
    uint32_t                    tgt_gtx_usr_cfg;
-   bool                        sap_restrt_ch_avoid;
+   bool                        sap_internal_restart;
    bool                        bug_on_reinit_failure;
    /* parameter to force sap into 11n */
    bool                        sap_force_11n_for_11ac;
@@ -4774,6 +4787,8 @@ struct hdd_config {
    bool                        active_mode_offload;
    /* parameter for indicating sifs burst duration to fw */
    uint8_t                     sifs_burst_duration;
+
+   bool bpf_packet_filter_enable;
 };
 
 typedef struct hdd_config hdd_config_t;
@@ -4938,4 +4953,14 @@ void print_hdd_cfg(hdd_context_t *pHddCtx);
 void hdd_set_btc_bt_wlan_interval(hdd_context_t *pHddCtx);
 
 VOS_STATUS hdd_update_nss(hdd_context_t *hdd_ctx, uint8_t nss);
+
+/**
+ * hdd_set_dfs_regdomain() - During SSR, restore DFS regulatory domain
+ * with valid value
+ * @phddctx: context for hdd
+ * @restore: valure to verify the state
+ *
+ * Return: None
+ */
+void hdd_set_dfs_regdomain(hdd_context_t *phddctx, bool restore);
 #endif

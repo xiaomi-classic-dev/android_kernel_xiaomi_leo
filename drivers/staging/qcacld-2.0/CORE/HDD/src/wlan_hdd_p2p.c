@@ -117,9 +117,12 @@ const char *tdls_action_frame_type[] = {"TDLS Setup Request",
 
 extern struct net_device_ops net_ops_struct;
 
-static bool wlan_hdd_is_type_p2p_action( const u8 *buf )
+static bool wlan_hdd_is_type_p2p_action( const u8 *buf, uint32_t len)
 {
     const u8 *ouiPtr;
+
+    if (len < WLAN_HDD_PUBLIC_ACTION_FRAME_SUB_TYPE_OFFSET + 1)
+        return FALSE;
 
     if ( buf[WLAN_HDD_PUBLIC_ACTION_FRAME_CATEGORY_OFFSET] !=
                WLAN_HDD_PUBLIC_ACTION_FRAME ) {
@@ -145,11 +148,11 @@ static bool wlan_hdd_is_type_p2p_action( const u8 *buf )
     return TRUE;
 }
 
-static bool hdd_p2p_is_action_type_rsp( const u8 *buf )
+static bool hdd_p2p_is_action_type_rsp( const u8 *buf, uint32_t len )
 {
     tActionFrmType actionFrmType;
 
-    if ( wlan_hdd_is_type_p2p_action(buf) )
+    if ( wlan_hdd_is_type_p2p_action(buf, len) )
     {
         actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_SUB_TYPE_OFFSET];
         if ( actionFrmType != WLAN_HDD_INVITATION_REQ &&
@@ -1370,16 +1373,25 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
     hdd_remain_on_chan_ctx_t *pRemainChanCtx;
     hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX( pAdapter );
     tANI_U16 extendedWait = 0;
-    tANI_U8 type = WLAN_HDD_GET_TYPE_FRM_FC(buf[0]);
-    tANI_U8 subType = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
+    tANI_U8 type;
+    tANI_U8 subType;
     tActionFrmType actionFrmType;
     bool noack = 0;
     int status;
     unsigned long rc;
     hdd_adapter_t *goAdapter;
     uint8_t home_ch = 0;
+    uint32_t mgmt_hdr_len = sizeof(struct ieee80211_hdr_3addr);
 
     ENTER();
+
+    if (len < mgmt_hdr_len + 1) {
+        hddLog(LOGE, FL("Invalid Length"));
+        return -EINVAL;
+    }
+
+    type = WLAN_HDD_GET_TYPE_FRM_FC(buf[0]);
+    subType = WLAN_HDD_GET_SUBTYPE_FRM_FC(buf[0]);
 
     hddLog(LOG1, FL("wait: %d, offchan: %d"), wait, offchan);
     MTRACE(vos_trace(VOS_MODULE_ID_HDD,
@@ -1398,16 +1410,20 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
            hdd_device_mode_to_string(pAdapter->device_mode),
            pAdapter->device_mode, type);
 
-    hddLog(LOG1, FL("category: %d, actionID: %d"),
-           buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
+    if (type == SIR_MAC_MGMT_FRAME && subType == SIR_MAC_MGMT_ACTION &&
+        len > IEEE80211_MIN_ACTION_SIZE)
+        hddLog(LOG1, FL("category: %d, actionID: %d"),
+               buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
                WLAN_HDD_PUBLIC_ACTION_FRAME_CATEGORY_OFFSET],
-           buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
+               buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET +
                WLAN_HDD_PUBLIC_ACTION_FRAME_ACTION_OFFSET]);
 
 #ifdef WLAN_FEATURE_P2P_DEBUG
     if ((type == SIR_MAC_MGMT_FRAME) &&
             (subType == SIR_MAC_MGMT_ACTION) &&
-            wlan_hdd_is_type_p2p_action(&buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET]))
+            wlan_hdd_is_type_p2p_action(
+             &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+             len - mgmt_hdr_len))
     {
         actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_TYPE_OFFSET];
         if(actionFrmType >= MAX_P2P_ACTION_FRAME_TYPE)
@@ -1560,7 +1576,9 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
         pRemainChanCtx = cfgState->remain_on_chan_ctx;
         if ((type == SIR_MAC_MGMT_FRAME) &&
               (subType == SIR_MAC_MGMT_ACTION) &&
-               hdd_p2p_is_action_type_rsp(&buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET]) &&
+               hdd_p2p_is_action_type_rsp(
+                &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+                len - mgmt_hdr_len) &&
                cfgState->remain_on_chan_ctx &&
                cfgState->current_freq == chan->center_freq )
          {
@@ -1626,17 +1644,18 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
          } else
              mutex_unlock(&cfgState->remain_on_chan_ctx_lock);
 
+        mutex_lock(&cfgState->remain_on_chan_ctx_lock);
         if((cfgState->remain_on_chan_ctx != NULL) &&
            (cfgState->current_freq == chan->center_freq)
           )
         {
+            mutex_unlock(&cfgState->remain_on_chan_ctx_lock);
             hddLog(LOG1,"action frame: extending the wait time");
             extendedWait = (tANI_U16)wait;
             goto send_frame;
         }
-
+        mutex_unlock(&cfgState->remain_on_chan_ctx_lock);
         INIT_COMPLETION(pAdapter->offchannel_tx_event);
-
         status = wlan_hdd_request_remain_on_channel(wiphy, dev,
                                         chan,
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,8,0)) && !defined(WITH_BACKPORTS)
@@ -1713,7 +1732,9 @@ int __wlan_hdd_mgmt_tx(struct wiphy *wiphy, struct net_device *dev,
 
         if ((type == SIR_MAC_MGMT_FRAME) &&
                 (subType == SIR_MAC_MGMT_ACTION) &&
-                (buf[WLAN_HDD_PUBLIC_ACTION_FRAME_OFFSET] == WLAN_HDD_PUBLIC_ACTION_FRAME))
+                wlan_hdd_is_type_p2p_action(
+                 &buf[WLAN_HDD_PUBLIC_ACTION_FRAME_BODY_OFFSET],
+                 len - mgmt_hdr_len))
         {
             actionFrmType = buf[WLAN_HDD_PUBLIC_ACTION_FRAME_TYPE_OFFSET];
             hddLog(LOG1, "Tx Action Frame %u", actionFrmType);
@@ -2039,7 +2060,8 @@ int hdd_setP2pNoa( struct net_device *dev, tANI_U8 *command )
         NoA.single_noa_duration = 0;
         NoA.psSelection = P2P_POWER_SAVE_TYPE_PERIODIC_NOA;
     }
-    NoA.interval = MS_TO_MUS(100);
+    /* NOA interval in TU */
+    NoA.interval = NOA_INTERVAL_IN_TU;
     NoA.count = count;
     NoA.sessionid = pAdapter->sessionId;
 
