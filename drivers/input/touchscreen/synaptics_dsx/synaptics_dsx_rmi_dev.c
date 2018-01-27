@@ -389,25 +389,6 @@ static ssize_t rmidev_sysfs_intr_mask_store(struct device *dev,
 	return count;
 }
 
-static int rmidev_allocate_buffer(int count)
-{
-	if (count + 1 > rmidev->tmpbuf_size) {
-		if (rmidev->tmpbuf_size)
-			kfree(rmidev->tmpbuf);
-		rmidev->tmpbuf = kzalloc(count + 1, GFP_KERNEL);
-		if (!rmidev->tmpbuf) {
-			dev_err(rmidev->rmi4_data->pdev->dev.parent,
-					"%s: Failed to alloc mem for buffer\n",
-					__func__);
-			rmidev->tmpbuf_size = 0;
-			return -ENOMEM;
-		}
-		rmidev->tmpbuf_size = count + 1;
-	}
-
-	return 0;
-}
-
 /*
  * rmidev_llseek - set register address to access for RMI device
  *
@@ -485,23 +466,25 @@ static ssize_t rmidev_read(struct file *filp, char __user *buf,
 		return -EBADF;
 	}
 
-	if (count == 0)
-		return 0;
+	mutex_lock(&(dev_data->file_mutex));
 
 	if (count > (REG_ADDR_LIMIT - *f_pos))
 		count = REG_ADDR_LIMIT - *f_pos;
 
-	tmpbuf = kzalloc(count + 1, GFP_KERNEL);
-	if (!tmpbuf)
-		return -ENOMEM;
-
-	if (copy_from_user(tmpbuf, buf, count)) {
-		kfree(tmpbuf);
-		return -EFAULT;
+	if (count == 0) {
+		retval = 0;
+		goto unlock;
 	}
 
-	mutex_lock(&(dev_data->file_mutex));
-
+	if (*f_pos > REG_ADDR_LIMIT) {
+		retval = -EFAULT;
+		goto unlock;
+	}
+	tmpbuf = kzalloc(count + 1, GFP_KERNEL);
+	if (!tmpbuf) {
+		retval = -ENOMEM;
+		goto unlock;
+	}
 	retval = synaptics_rmi4_reg_read(rmidev->rmi4_data,
 			*f_pos,
 			rmidev->tmpbuf,
@@ -515,8 +498,9 @@ static ssize_t rmidev_read(struct file *filp, char __user *buf,
 		*f_pos += retval;
 
 clean_up:
-	mutex_unlock(&(dev_data->file_mutex));
 	kfree(tmpbuf);
+unlock:
+	mutex_unlock(&(dev_data->file_mutex));
 	return retval;
 }
 
@@ -540,23 +524,31 @@ static ssize_t rmidev_write(struct file *filp, const char __user *buf,
 		return -EBADF;
 	}
 
-	if (count == 0)
-		return 0;
+	mutex_lock(&(dev_data->file_mutex));
+
+	if (*f_pos > REG_ADDR_LIMIT) {
+		retval = -EFAULT;
+		goto unlock;
+	}
 
 	if (count > (REG_ADDR_LIMIT - *f_pos))
 		count = REG_ADDR_LIMIT - *f_pos;
 
-    rmidev_allocate_buffer(count);
+	if (count == 0) {
+		retval = 0;
+		goto unlock;
+	}
 
 	tmpbuf = kzalloc(count + 1, GFP_KERNEL);
-	if (!tmpbuf)
-		return -ENOMEM;
+	if (!tmpbuf) {
+		retval = -ENOMEM;
+		goto unlock;
+	}
 
 	if (copy_from_user(tmpbuf, buf, count)) {
-		kfree(tmpbuf);
-		return -EFAULT;
+		retval = -EFAULT;
+		goto clean_up;
 	}
-	mutex_lock(&(dev_data->file_mutex));
 
 	retval = synaptics_rmi4_reg_write(rmidev->rmi4_data,
 			*f_pos,
@@ -565,8 +557,10 @@ static ssize_t rmidev_write(struct file *filp, const char __user *buf,
 	if (retval >= 0)
 		*f_pos += retval;
 
-	mutex_unlock(&(dev_data->file_mutex));
+clean_up:
 	kfree(tmpbuf);
+unlock:
+	mutex_unlock(&(dev_data->file_mutex));
 	return retval;
 }
 

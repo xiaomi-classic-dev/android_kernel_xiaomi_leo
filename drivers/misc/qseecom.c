@@ -2190,7 +2190,7 @@ static int __qseecom_send_cmd(struct qseecom_dev_handle *data,
 	if (!found_app) {
 		pr_err("app_id %d (%s) is not found\n", data->client.app_id,
 			(char *)data->client.app_name);
-		return -EINVAL;
+		return -ENOENT;
 	}
 
 	if (qseecom.whitelist_support == false || data->use_legacy_cmd == true)
@@ -3066,6 +3066,8 @@ int qseecom_start_app(struct qseecom_handle **handle,
 	if (ret < 0)
 		goto err;
 
+	data->client.app_id = ret;
+	strlcpy(data->client.app_name, app_name, MAX_APP_NAME_SIZE);
 	if (ret > 0) {
 		pr_warn("App id %d for [%s] app exists\n", ret,
 			(char *)app_ireq.app_name);
@@ -3090,8 +3092,6 @@ int qseecom_start_app(struct qseecom_handle **handle,
 		ret = __qseecom_load_fw(data, app_name);
 		if (ret < 0)
 			goto err;
-		data->client.app_id = ret;
-		strlcpy(data->client.app_name, app_name, MAX_APP_NAME_SIZE);
 	}
 	data->client.app_id = ret;
 	if (!found_app) {
@@ -4780,10 +4780,20 @@ static int __qseecom_qteec_issue_cmd(struct qseecom_dev_handle *data,
 	int ret = 0;
 	uint32_t reqd_len_sb_in = 0;
 	struct sglist_info *table = data->sglistinfo_ptr;
+	void *req_ptr = NULL;
+	void *resp_ptr = NULL;
 
 	ret  = __qseecom_qteec_validate_msg(data, req);
 	if (ret)
 		return ret;
+
+	req_ptr = req->req_ptr;
+	resp_ptr = req->resp_ptr;
+
+	req->req_ptr = (void *)__qseecom_uvirt_to_kvirt(data,
+						(uintptr_t)req_ptr);
+	req->resp_ptr = (void *)__qseecom_uvirt_to_kvirt(data,
+						(uintptr_t)resp_ptr);
 
 	if ((cmd_id == QSEOS_TEE_OPEN_SESSION) ||
 			(cmd_id == QSEOS_TEE_REQUEST_CANCELLATION)) {
@@ -4800,10 +4810,10 @@ static int __qseecom_qteec_issue_cmd(struct qseecom_dev_handle *data,
 		ireq.qsee_cmd_id = cmd_id;
 	ireq.app_id = data->client.app_id;
 	ireq.req_ptr = (uint32_t)__qseecom_uvirt_to_kphys(data,
-						(uintptr_t)req->req_ptr);
+						(uintptr_t)req_ptr);
 	ireq.req_len = req->req_len;
 	ireq.resp_ptr = (uint32_t)__qseecom_uvirt_to_kphys(data,
-						(uintptr_t)req->resp_ptr);
+						(uintptr_t)resp_ptr);
 	ireq.resp_len = req->resp_len;
 	ireq.sglistinfo_ptr = (uint32_t)virt_to_phys(table);
 	ireq.sglistinfo_len = SGLISTINFO_TABLE_SIZE;
@@ -5239,7 +5249,11 @@ long qseecom_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 			break;
 		}
 		pr_debug("SET_MEM_PARAM: qseecom addr = 0x%pK\n", data);
+		mutex_lock(&app_access_lock);
+		atomic_inc(&data->ioctl_count);
 		ret = qseecom_set_client_mem_param(data, argp);
+		atomic_dec(&data->ioctl_count);
+		mutex_unlock(&app_access_lock);
 		if (ret)
 			pr_err("failed Qqseecom_set_mem_param request: %d\n",
 								ret);
