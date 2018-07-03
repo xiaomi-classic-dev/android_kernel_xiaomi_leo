@@ -989,6 +989,7 @@ static int uio_init(struct platform_device *pdev)
 		return ret;
 	}
 	dev_set_drvdata(&pdev->dev, info);
+	pr_info("Device created for client '%s'\n", clnt_res->name);
 
 	return 0;
 }

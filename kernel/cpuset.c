@@ -6,6 +6,7 @@
  *  Copyright (C) 2003 BULL SA.
  *  Copyright (C) 2004-2007 Silicon Graphics, Inc.
  *  Copyright (C) 2006 Google, Inc
+ *  Copyright (C) 2018 XiaoMi, Inc.
  *
  *  Portions derived from Patrick Mochel's sysfs code.
  *  sysfs is Copyright (c) 2001-3 Patrick Mochel

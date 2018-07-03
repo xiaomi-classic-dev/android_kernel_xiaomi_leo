@@ -214,9 +214,9 @@ static ssize_t hdmi_edid_sysfs_wta_res_info(struct device *dev,
 	int rc, page_id;
 	u32 i = 0, j, page;
 	ssize_t ret = strnlen(buf, PAGE_SIZE);
+	struct msm_hdmi_mode_timing_info info = {0};
 	struct hdmi_edid_ctrl *edid_ctrl =
 		hdmi_get_featuredata_from_sysfs_dev(dev, HDMI_TX_FEAT_EDID);
-	struct msm_hdmi_mode_timing_info info = {0};
 
 	if (!edid_ctrl) {
 		DEV_ERR("%s: invalid input\n", __func__);

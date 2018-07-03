@@ -3,6 +3,7 @@
  *
  * Copyright (c) 2003 Patrick Mochel
  * Copyright (c) 2003 Open Source Development Lab
+ * Copyright (C) 2018 XiaoMi, Inc.
  *
  * This file is released under the GPLv2
  *
@@ -528,6 +529,9 @@ static void dpm_resume_noirq(pm_message_t state)
 			suspend_stats.failed_resume_noirq++;
 			dpm_save_failed_step(SUSPEND_RESUME_NOIRQ);
 			dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_step_dev(SUSPEND_RESUME_NOIRQ, dev_name(dev));
+#endif
 			pm_dev_err(dev, state, " noirq", error);
 		}
 
@@ -609,6 +613,9 @@ static void dpm_resume_early(pm_message_t state)
 			suspend_stats.failed_resume_early++;
 			dpm_save_failed_step(SUSPEND_RESUME_EARLY);
 			dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_step_dev(SUSPEND_RESUME_EARLY, dev_name(dev));
+#endif
 			pm_dev_err(dev, state, " early", error);
 		}
 
@@ -775,6 +782,9 @@ void dpm_resume(pm_message_t state)
 				suspend_stats.failed_resume++;
 				dpm_save_failed_step(SUSPEND_RESUME);
 				dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_PM_SLEEP_TRACE
+				suspend_failed_step_dev(SUSPEND_RESUME, dev_name(dev));
+#endif
 				pm_dev_err(dev, state, "", error);
 			}
 
@@ -971,6 +981,9 @@ static int dpm_suspend_noirq(pm_message_t state)
 			suspend_stats.failed_suspend_noirq++;
 			dpm_save_failed_step(SUSPEND_SUSPEND_NOIRQ);
 			dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_step_dev(SUSPEND_SUSPEND_NOIRQ, dev_name(dev));
+#endif
 			put_device(dev);
 			break;
 		}
@@ -979,6 +992,9 @@ static int dpm_suspend_noirq(pm_message_t state)
 		put_device(dev);
 
 		if (pm_wakeup_pending()) {
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_ws_update();
+#endif
 			pm_get_active_wakeup_sources(suspend_abort,
 				MAX_SUSPEND_ABORT_LEN);
 			log_suspend_abort_reason(suspend_abort);
@@ -1067,6 +1083,9 @@ static int dpm_suspend_late(pm_message_t state)
 			suspend_stats.failed_suspend_late++;
 			dpm_save_failed_step(SUSPEND_SUSPEND_LATE);
 			dpm_save_failed_dev(dev_name(dev));
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_step_dev(SUSPEND_SUSPEND_LATE, dev_name(dev));
+#endif
 			put_device(dev);
 			break;
 		}
@@ -1075,6 +1094,9 @@ static int dpm_suspend_late(pm_message_t state)
 		put_device(dev);
 
 		if (pm_wakeup_pending()) {
+#ifdef CONFIG_PM_SLEEP_TRACE
+			suspend_failed_ws_update();
+#endif
 			pm_get_active_wakeup_sources(suspend_abort,
 				MAX_SUSPEND_ABORT_LEN);
 			log_suspend_abort_reason(suspend_abort);
@@ -1274,6 +1296,9 @@ int dpm_suspend(pm_message_t state)
 {
 	ktime_t starttime = ktime_get();
 	int error = 0;
+#ifdef CONFIG_PM_SLEEP_TRACE
+	const char *device_name = NULL;
+#endif
 
 	might_sleep();
 
@@ -1286,6 +1311,9 @@ int dpm_suspend(pm_message_t state)
 		get_device(dev);
 		mutex_unlock(&dpm_list_mtx);
 
+#ifdef CONFIG_PM_SLEEP_TRACE
+		device_name = dev_name(dev);
+#endif
 		error = device_suspend(dev);
 
 		mutex_lock(&dpm_list_mtx);
@@ -1308,6 +1336,9 @@ int dpm_suspend(pm_message_t state)
 	if (error) {
 		suspend_stats.failed_suspend++;
 		dpm_save_failed_step(SUSPEND_SUSPEND);
+#ifdef CONFIG_PM_SLEEP_TRACE
+		suspend_failed_step_dev(SUSPEND_SUSPEND, device_name);
+#endif
 	} else
 		dpm_show_time(starttime, state, NULL);
 	return error;

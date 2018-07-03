@@ -155,6 +155,7 @@ static ssize_t sps_read_info(struct file *file, char __user *ubuf,
 	}
 	mutex_unlock(&sps_debugfs_lock);
 
+	mutex_unlock(&sps_debugfs_lock);
 	return ret;
 }
 
@@ -295,6 +296,7 @@ static ssize_t sps_set_logging_option(struct file *file, const char __user *buf,
 	logging_option = option;
 	mutex_unlock(&sps_debugfs_lock);
 
+	mutex_unlock(&sps_debugfs_lock);
 	return count;
 }
 
@@ -996,6 +998,7 @@ exit_err:
 		return SPS_ERROR;
 	}
 
+	mutex_init(&sps_debugfs_lock);
 	return 0;
 }
 

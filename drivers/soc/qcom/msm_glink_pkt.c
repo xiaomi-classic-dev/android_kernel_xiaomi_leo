@@ -347,6 +347,17 @@ static void glink_pkt_queue_rx_intent_worker(struct work_struct *work)
 	return;
 }
 
+static bool glink_pkt_read_avail(struct glink_pkt_dev *devp)
+{
+	bool list_is_empty;
+	unsigned long flags;
+
+	spin_lock_irqsave(&devp->pkt_list_lock, flags);
+	list_is_empty = list_empty(&devp->pkt_list);
+	spin_unlock_irqrestore(&devp->pkt_list_lock, flags);
+	return !list_is_empty;
+}
+
 /**
  * glink_pkt_read_avail() - check any pending packets to read
  * devp:	pointer to G-Link packet device.

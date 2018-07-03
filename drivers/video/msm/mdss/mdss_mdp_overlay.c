@@ -1033,7 +1033,6 @@ exit_fail:
 	list_for_each_entry(pipe, &mdp5_data->pipes_used, list) {
 		if (pipe->type == MDSS_MDP_PIPE_TYPE_CURSOR)
 			continue;
-
 		pr_debug("freeing allocations for pipe %d\n", pipe->num);
 		mdss_mdp_smp_unreserve(pipe);
 		pipe->params_changed = 0;
@@ -2692,7 +2691,7 @@ static ssize_t dynamic_fps_sysfs_wta_dfps(struct device *dev,
 	if (!rc) {
 		pr_debug("%s: configured to '%d' FPS\n", __func__, dfps);
 	} else {
-		pr_err("Failed to configure '%d' FPS. rc = %d\n",
+		pr_debug("Failed to configure '%d' FPS. rc = %d\n",
 							dfps, rc);
 		mutex_unlock(&mdp5_data->dfps_lock);
 		return rc;
