@@ -40,6 +40,15 @@ void prandom_seed_full_state(struct rnd_state __percpu *pcpu_state);
 #define prandom_init_once(pcpu_state)			\
 	DO_ONCE(prandom_seed_full_state, (pcpu_state))
 
+/**
+ * prandom_u32_max - return a pseudo-random number in [0, ep_ro)
+ * @ep_ro: right-open interval endpoint
+ */
+static inline u32 prandom_u32_max(u32 ep_ro)
+{
+	return (u32)(((u64)prandom_u32() * ep_ro) >> 32);
+}
+
 /*
  * Handle minimum values for seeds
  */
