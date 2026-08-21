@@ -1498,10 +1498,12 @@ static struct packet_fanout *fanout_release(struct sock *sk)
 	f = po->fanout;
 	if (f) {
 		po->fanout = NULL;
-		if (atomic_dec_and_test(&f->sk_ref))
+		if (atomic_dec_and_test(&f->sk_ref)) {
 			list_del(&f->list);
-		else
+			fanout_release_data(f);
+		} else {
 			f = NULL;
+		}
 	}
 	mutex_unlock(&fanout_mutex);
 
