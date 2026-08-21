@@ -1807,7 +1807,7 @@ __maybe_unused static int dbg_remove_files(struct device *dev)
 	return 0;
 }
 
-static void dump_usb_info(void *ignore, unsigned int ebi_addr,
+static void __maybe_unused dump_usb_info(void *ignore, unsigned int ebi_addr,
 	unsigned int ebi_apacket0, unsigned int ebi_apacket1)
 {
 	struct ci13xxx *udc = _udc;

@@ -5644,7 +5644,7 @@ int __init cgroup_init_early(void)
 int __init cgroup_init(void)
 {
 	struct cgroup_subsys *ss;
-	int ssid, err;
+	int ssid;
 
 	BUILD_BUG_ON(CGROUP_SUBSYS_COUNT > 16);
 	BUG_ON(percpu_init_rwsem(&cgroup_threadgroup_rwsem));
