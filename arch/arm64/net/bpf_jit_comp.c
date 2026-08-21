@@ -19,15 +19,31 @@
 #define pr_fmt(fmt) "bpf_jit: " fmt
 
 #include <linux/filter.h>
+#include <linux/gfp.h>
 #include <linux/printk.h>
 #include <linux/skbuff.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include <asm/byteorder.h>
 #include <asm/cacheflush.h>
 #include <asm/debug-monitors.h>
+#include <asm/memory.h>
+#include <asm/pgtable.h>
 
 #include "bpf_jit.h"
+
+void *bpf_jit_alloc_exec(unsigned long size)
+{
+	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
+				    GFP_KERNEL, PAGE_KERNEL_EXEC, NUMA_NO_NODE,
+				    __builtin_return_address(0));
+}
+
+void bpf_jit_free_exec(void *addr)
+{
+	vfree(addr);
+}
 
 #define TMP_REG_1 (MAX_BPF_REG + 0)
 #define TMP_REG_2 (MAX_BPF_REG + 1)
