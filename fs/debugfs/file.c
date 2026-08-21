@@ -51,17 +51,18 @@ static bool debugfs_can_access(struct super_block *sb, char *path)
 }
 
 struct debugfs_filter {
+	struct dir_context ctx;
+	struct dir_context *caller;
 	struct super_block *sb;
 	const char *path;
-
-	filldir_t filldir;
-	void *dirent;
 };
 
 static int debugfs_dir_filldir(void *arg, const char *name,
 		int namelen, loff_t offset, u64 ino, unsigned int d_type)
 {
-	struct debugfs_filter *filter = arg;
+	struct dir_context *ctx = arg;
+	struct debugfs_filter *filter = container_of(ctx,
+						      struct debugfs_filter, ctx);
 	char buf[256];
 
 	strlcpy(buf, filter->path, sizeof(buf));
@@ -70,30 +71,36 @@ static int debugfs_dir_filldir(void *arg, const char *name,
 	strlcat(buf, name, sizeof(buf));
 
 	if (debugfs_can_access(filter->sb, buf)) {
-		return filter->filldir(filter->dirent,
-				name, namelen, offset, ino, d_type);
+		return filter->caller->actor(filter->caller, name, namelen,
+					     offset, ino, d_type);
 	} else
 		return 0;
 }
 
-static int debugfs_dir_readdir(struct file *file, void *dirent, filldir_t filldir)
+static int debugfs_dir_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct debugfs_filter filter;
+	struct debugfs_filter filter = {
+		.ctx = {
+			.actor = debugfs_dir_filldir,
+			.pos = ctx->pos,
+		},
+		.caller = ctx,
+	};
 	char buf[256];
+	int ret;
 
 	filter.sb   = file->f_dentry->d_sb;
 	filter.path = dentry_path(file->f_dentry, buf, sizeof(buf));
 
-	filter.filldir = filldir;
-	filter.dirent  = dirent;
-
-	return dcache_readdir(file, &filter, debugfs_dir_filldir);
+	ret = dcache_readdir(file, &filter.ctx);
+	ctx->pos = filter.ctx.pos;
+	return ret;
 }
 
 const struct file_operations debugfs_dir_operations = {
 	.open		= dcache_dir_open,
 	.release	= dcache_dir_close,
-	.readdir	= debugfs_dir_readdir,
+	.iterate	= debugfs_dir_readdir,
 };
 
 static int debugfs_open_file(struct inode *inode, struct file *file)
