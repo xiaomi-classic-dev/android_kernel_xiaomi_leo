@@ -62,7 +62,7 @@ static inline int seccomp_mode(struct seccomp *s)
 struct seccomp { };
 struct seccomp_filter { };
 
-static inline int secure_computing(int this_syscall) { return 0; }
+static inline int secure_computing(void) { return 0; }
 static inline void secure_computing_strict(int this_syscall) { return; }
 
 static inline long prctl_get_seccomp(void)
