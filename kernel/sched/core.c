@@ -10073,18 +10073,18 @@ static int cpu_notify_on_migrate_write_u64(struct cgroup_subsys_state *css,
 
 #ifdef CONFIG_SCHED_HMP
 
-static u64 cpu_upmigrate_discourage_read_u64(struct cgroup *cgrp,
+static u64 cpu_upmigrate_discourage_read_u64(struct cgroup_subsys_state *css,
 					  struct cftype *cft)
 {
-	struct task_group *tg = cgroup_tg(cgrp);
+	struct task_group *tg = css_tg(css);
 
 	return tg->upmigrate_discouraged;
 }
 
-static int cpu_upmigrate_discourage_write_u64(struct cgroup *cgrp,
+static int cpu_upmigrate_discourage_write_u64(struct cgroup_subsys_state *css,
 				   struct cftype *cft, u64 upmigrate_discourage)
 {
-	struct task_group *tg = cgroup_tg(cgrp);
+	struct task_group *tg = css_tg(css);
 	int discourage = upmigrate_discourage > 0;
 
 	if (tg->upmigrate_discouraged == discourage)
