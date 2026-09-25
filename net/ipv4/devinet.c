@@ -1446,7 +1446,8 @@ static size_t inet_nlmsg_size(void)
 	       + nla_total_size(4) /* IFA_LOCAL */
 	       + nla_total_size(4) /* IFA_BROADCAST */
 	       + nla_total_size(IFNAMSIZ) /* IFA_LABEL */
-	       + nla_total_size(sizeof(struct ifa_cacheinfo)); /* IFA_CACHEINFO */
+	       + nla_total_size(sizeof(struct ifa_cacheinfo)) /* IFA_CACHEINFO */
+	       + nla_total_size(4); /* IFA_FLAGS */
 }
 
 static inline u32 cstamp_delta(unsigned long cstamp)
@@ -1515,7 +1516,8 @@ static int inet_fill_ifaddr(struct sk_buff *skb, struct in_ifaddr *ifa,
 	    (ifa->ifa_label[0] &&
 	     nla_put_string(skb, IFA_LABEL, ifa->ifa_label)) ||
 	    put_cacheinfo(skb, ifa->ifa_cstamp, ifa->ifa_tstamp,
-			  preferred, valid))
+			  preferred, valid) ||
+	    nla_put_u32(skb, IFA_FLAGS, ifa->ifa_flags))
 		goto nla_put_failure;
 
 	return nlmsg_end(skb, nlh);
@@ -2315,4 +2317,3 @@ void __init devinet_init(void)
 	rtnl_register(PF_INET, RTM_GETNETCONF, inet_netconf_get_devconf,
 		      inet_netconf_dump_devconf, NULL);
 }
-
