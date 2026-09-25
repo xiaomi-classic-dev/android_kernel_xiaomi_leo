@@ -4019,8 +4019,9 @@ int vfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 }
 EXPORT_SYMBOL(vfs_rename);
 
-SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
-		int, newdfd, const char __user *, newname)
+static int do_renameat(int olddfd, const char __user *oldname,
+		       int newdfd, const char __user *newname,
+		       unsigned int flags)
 {
 	struct dentry *old_dir, *new_dir;
 	struct dentry *old_dentry, *new_dentry;
@@ -4031,6 +4032,9 @@ SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
 	unsigned int lookup_flags = 0;
 	bool should_retry = false;
 	int error;
+
+	if (flags & ~RENAME_NOREPLACE)
+		return -EINVAL;
 retry:
 	from = user_path_parent(olddfd, oldname, &oldnd, lookup_flags);
 	if (IS_ERR(from)) {
@@ -4095,6 +4099,10 @@ retry:
 	error = -ENOTEMPTY;
 	if (new_dentry == trap)
 		goto exit5;
+	if ((flags & RENAME_NOREPLACE) && new_dentry->d_inode) {
+		error = -EEXIST;
+		goto exit5;
+	}
 
 	error = security_path_rename(&oldnd.path, old_dentry,
 				     &newnd.path, new_dentry);
@@ -4126,14 +4134,16 @@ exit:
 	return error;
 }
 
-/* flags == 0 retains renameat semantics without changing the VFS path. */
+SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
+		int, newdfd, const char __user *, newname)
+{
+	return do_renameat(olddfd, oldname, newdfd, newname, 0);
+}
+
 SYSCALL_DEFINE5(renameat2, int, olddfd, const char __user *, oldname,
 		int, newdfd, const char __user *, newname, unsigned int, flags)
 {
-	if (flags)
-		return -EINVAL;
-
-	return sys_renameat(olddfd, oldname, newdfd, newname);
+	return do_renameat(olddfd, oldname, newdfd, newname, flags);
 }
 
 SYSCALL_DEFINE2(rename, const char __user *, oldname, const char __user *, newname)
