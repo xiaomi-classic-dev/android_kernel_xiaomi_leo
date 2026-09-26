@@ -3448,6 +3448,32 @@ out:
 	return ret;
 }
 
+static int binder_ioctl_get_node_info_for_ref(struct binder_proc *proc,
+				       struct binder_node_info_for_ref *info)
+{
+	struct binder_context *context = proc->context;
+	struct binder_ref *ref;
+	struct binder_node *node;
+
+	if (info->strong_count || info->weak_count || info->reserved1 ||
+	    info->reserved2 || info->reserved3)
+		return -EINVAL;
+
+	/* Only the context manager can inspect references on this device. */
+	if (!context->binder_context_mgr_node ||
+	    context->binder_context_mgr_node->proc != proc)
+		return -EPERM;
+
+	ref = binder_get_ref(proc, info->handle, true);
+	if (!ref)
+		return -EINVAL;
+
+	node = ref->node;
+	info->strong_count = node->local_strong_refs + node->internal_strong_refs;
+	info->weak_count = node->local_weak_refs;
+	return 0;
+}
+
 static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret;
@@ -3502,6 +3528,26 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (ret)
 			goto err;
 		break;
+	case BINDER_GET_NODE_INFO_FOR_REF: {
+		struct binder_node_info_for_ref info;
+
+		if (size != sizeof(info)) {
+			ret = -EINVAL;
+			goto err;
+		}
+		if (copy_from_user_preempt_disabled(&info, ubuf, sizeof(info))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		ret = binder_ioctl_get_node_info_for_ref(proc, &info);
+		if (ret)
+			goto err;
+		if (copy_to_user_preempt_disabled(ubuf, &info, sizeof(info))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		break;
+	}
 	case BINDER_THREAD_EXIT:
 		binder_debug(BINDER_DEBUG_THREADS, "%d:%d exit\n",
 			     proc->pid, thread->pid);

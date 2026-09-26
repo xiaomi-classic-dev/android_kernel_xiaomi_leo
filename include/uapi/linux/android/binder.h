@@ -179,6 +179,15 @@ struct binder_version {
 	__s32       protocol_version;
 };
 
+struct binder_node_info_for_ref {
+	__u32 handle;
+	__u32 strong_count;
+	__u32 weak_count;
+	__u32 reserved1;
+	__u32 reserved2;
+	__u32 reserved3;
+};
+
 /* This is the current protocol version. */
 #ifdef BINDER_IPC_32BIT
 #define BINDER_CURRENT_PROTOCOL_VERSION 7
@@ -193,6 +202,7 @@ struct binder_version {
 #define	BINDER_SET_CONTEXT_MGR		_IOW('b', 7, __s32)
 #define	BINDER_THREAD_EXIT		_IOW('b', 8, __s32)
 #define BINDER_VERSION			_IOWR('b', 9, struct binder_version)
+#define BINDER_GET_NODE_INFO_FOR_REF	_IOWR('b', 12, struct binder_node_info_for_ref)
 #define BINDER_SET_CONTEXT_MGR_EXT	_IOW('b', 13, struct flat_binder_object)
 
 /*
