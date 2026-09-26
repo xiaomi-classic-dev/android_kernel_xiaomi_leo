@@ -2809,6 +2809,59 @@ EXPORT_SYMBOL(dev_loopback_xmit);
  *      the BH enable code must have IRQs enabled so that it will not deadlock.
  *          --BLG
  */
+#ifdef CONFIG_NET_CLS_ACT
+static struct sk_buff *sch_handle_egress(struct sk_buff *skb, int *ret)
+{
+	struct netdev_queue *rxq;
+	struct tcf_proto __rcu **chain;
+	struct tcf_proto *fl;
+	struct tcf_result res;
+	struct Qdisc *sch;
+
+	rxq = rcu_dereference_bh(skb->dev->ingress_queue);
+	if (!rxq)
+		return skb;
+	sch = rcu_dereference_bh(rxq->qdisc);
+	if (!(sch->flags & TCQ_F_CLSACT))
+		return skb;
+
+	chain = sch->ops->cl_ops->tcf_chain(sch, TC_H_MIN_EGRESS);
+	fl = rcu_dereference_bh(*chain);
+	if (!fl)
+		return skb;
+
+	/* A classifier may redirect back through dev_queue_xmit() while the
+	 * ingress qdisc lock is held.  Keep the egress path lockless.
+	 */
+	qdisc_pkt_len_init(skb);
+
+	switch (tc_classify(skb, fl, &res)) {
+	case TC_ACT_OK:
+	case TC_ACT_RECLASSIFY:
+		skb->tc_index = TC_H_MIN(res.classid);
+		break;
+	case TC_ACT_SHOT:
+		*ret = NET_XMIT_DROP;
+		kfree_skb(skb);
+		return NULL;
+	case TC_ACT_STOLEN:
+	case TC_ACT_QUEUED:
+		*ret = NET_XMIT_SUCCESS;
+		consume_skb(skb);
+		return NULL;
+	case TC_ACT_REDIRECT:
+		/* Egress skb data already includes the link-layer header. */
+		skb_do_redirect(skb);
+		*ret = NET_XMIT_SUCCESS;
+		return NULL;
+	default:
+		break;
+	}
+
+	return skb;
+}
+#endif
+
 int dev_queue_xmit(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dev;
@@ -2830,6 +2883,9 @@ int dev_queue_xmit(struct sk_buff *skb)
 
 #ifdef CONFIG_NET_CLS_ACT
 	skb->tc_verd = SET_TC_AT(skb->tc_verd, AT_EGRESS);
+	skb = sch_handle_egress(skb, &rc);
+	if (!skb)
+		goto out;
 #endif
 	trace_net_dev_queue(skb);
 	if (q->enqueue) {

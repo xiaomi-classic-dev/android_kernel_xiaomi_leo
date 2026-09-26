@@ -57,6 +57,7 @@ struct Qdisc {
 				      * Its true for MQ/MQPRIO slaves, or non
 				      * multiqueue device.
 				      */
+#define TCQ_F_CLSACT		0x20
 #define TCQ_F_WARN_NONWC	(1 << 16)
 	u32			limit;
 	const struct Qdisc_ops	*ops;
