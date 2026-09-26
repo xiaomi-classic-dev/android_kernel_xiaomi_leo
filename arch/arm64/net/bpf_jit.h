@@ -72,6 +72,13 @@
 #define A64_STR64(Xt, Xn, Xm) A64_LS_REG(Xt, Xn, Xm, 64, STORE)
 #define A64_LDR64(Xt, Xn, Xm) A64_LS_REG(Xt, Xn, Xm, 64, LOAD)
 
+/* Load/store exclusive. This kernel's insn helpers predate these encoders. */
+#define A64_LDXR(sf, Rt, Rn) \
+	(((sf) ? 0xc85f7c00 : 0x885f7c00) | ((Rn) << 5) | (Rt))
+#define A64_STXR(sf, Rt, Rn, Rs) \
+	(((sf) ? 0xc8007c00 : 0x88007c00) | ((Rs) << 16) | \
+	 ((Rn) << 5) | (Rt))
+
 /* Load/store register pair */
 #define A64_LS_PAIR(Rt, Rt2, Rn, offset, ls, type) \
 	aarch64_insn_gen_load_store_pair(Rt, Rt2, Rn, offset, \
