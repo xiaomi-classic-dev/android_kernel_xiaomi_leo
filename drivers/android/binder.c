@@ -167,7 +167,7 @@ enum binder_stat_types {
 };
 
 struct binder_stats {
-	int br[_IOC_NR(BR_FAILED_REPLY) + 1];
+	int br[_IOC_NR(BR_ONEWAY_SPAM_SUSPECT) + 1];
 	int bc[_IOC_NR(BC_REPLY_SG) + 1];
 };
 
@@ -255,6 +255,7 @@ struct binder_work {
 	enum {
 		BINDER_WORK_TRANSACTION = 1,
 		BINDER_WORK_TRANSACTION_COMPLETE,
+		BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT,
 		BINDER_WORK_NODE,
 		BINDER_WORK_DEAD_BINDER,
 		BINDER_WORK_DEAD_BINDER_AND_CLEAR,
@@ -316,7 +317,8 @@ struct binder_buffer {
 	unsigned free:1;
 	unsigned allow_user_free:1;
 	unsigned async_transaction:1;
-	unsigned debug_id:29;
+	unsigned oneway_spam_suspect:1;
+	unsigned debug_id:28;
 
 	struct binder_transaction *transaction;
 
@@ -325,6 +327,7 @@ struct binder_buffer {
 	size_t offsets_size;
 	size_t extra_buffers_size;
 	void *data;
+	int pid;
 };
 
 enum binder_deferred_state {
@@ -353,6 +356,8 @@ struct binder_proc {
 	struct rb_root free_buffers;
 	struct rb_root allocated_buffers;
 	size_t free_async_space;
+	bool oneway_spam_detected;
+	bool oneway_spam_detection_enabled;
 
 	struct page **pages;
 	size_t buffer_size;
@@ -580,6 +585,34 @@ static size_t binder_buffer_size(struct binder_proc *proc,
 	return (u8 *)binder_buffer_next(buffer)->data - (u8 *)buffer->data;
 }
 
+static bool binder_check_oneway_spam(struct binder_proc *proc, int pid)
+{
+	struct rb_node *n;
+	struct binder_buffer *buffer;
+	size_t total_alloc_size = 0;
+	size_t num_buffers = 0;
+
+	/* Attribute low async space to the sender holding the queued buffers. */
+	for (n = rb_first(&proc->allocated_buffers); n; n = rb_next(n)) {
+		buffer = rb_entry(n, struct binder_buffer, rb_node);
+		if (buffer->pid != pid || !buffer->async_transaction)
+			continue;
+		total_alloc_size += binder_buffer_size(proc, buffer);
+		num_buffers++;
+	}
+
+	if (num_buffers > 50 || total_alloc_size > proc->buffer_size / 4) {
+		binder_debug(BINDER_DEBUG_USER_ERROR,
+			     "%d: pid %d spamming oneway? %zd buffers allocated for a total size of %zd\n",
+			     proc->pid, pid, num_buffers, total_alloc_size);
+		if (!proc->oneway_spam_detected) {
+			proc->oneway_spam_detected = true;
+			return true;
+		}
+	}
+	return false;
+}
+
 static void binder_insert_free_buffer(struct binder_proc *proc,
 				      struct binder_buffer *new_buffer)
 {
@@ -791,7 +824,7 @@ static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 					      size_t data_size,
 					      size_t offsets_size,
 					      size_t extra_buffers_size,
-					      int is_async)
+					      int is_async, int pid)
 {
 	struct rb_node *n = proc->free_buffers.rb_node;
 	struct binder_buffer *buffer;
@@ -896,11 +929,18 @@ static struct binder_buffer *binder_alloc_buf(struct binder_proc *proc,
 	buffer->offsets_size = offsets_size;
 	buffer->extra_buffers_size = extra_buffers_size;
 	buffer->async_transaction = is_async;
+	buffer->pid = pid;
+	buffer->oneway_spam_suspect = 0;
 	if (is_async) {
 		proc->free_async_space -= size + sizeof(struct binder_buffer);
 		binder_debug(BINDER_DEBUG_BUFFER_ALLOC_ASYNC,
 			     "%d: binder_alloc_buf size %zd async free %zd\n",
 			      proc->pid, size, proc->free_async_space);
+		if (proc->free_async_space < proc->buffer_size / 10)
+			buffer->oneway_spam_suspect =
+				binder_check_oneway_spam(proc, pid);
+		else
+			proc->oneway_spam_detected = false;
 	}
 
 	return buffer;
@@ -2160,7 +2200,7 @@ static void binder_transaction(struct binder_proc *proc,
 
 	t->buffer = binder_alloc_buf(target_proc, tr->data_size,
 		tr->offsets_size, extra_buffers_size,
-		!reply && (t->flags & TF_ONE_WAY));
+		!reply && (t->flags & TF_ONE_WAY), proc->pid);
 	if (t->buffer == NULL) {
 		return_error = BR_FAILED_REPLY;
 		goto err_binder_alloc_buf_failed;
@@ -2369,7 +2409,9 @@ static void binder_transaction(struct binder_proc *proc,
 	}
 	t->work.type = BINDER_WORK_TRANSACTION;
 	list_add_tail(&t->work.entry, target_list);
-	tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
+	tcomplete->type = t->buffer->oneway_spam_suspect ?
+		BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT :
+		BINDER_WORK_TRANSACTION_COMPLETE;
 	list_add_tail(&tcomplete->entry, &thread->todo);
 	if (target_wait) {
 		if (reply || !(t->flags & TF_ONE_WAY)) {
@@ -2950,16 +2992,21 @@ retry:
 		case BINDER_WORK_TRANSACTION: {
 			t = container_of(w, struct binder_transaction, work);
 		} break;
-		case BINDER_WORK_TRANSACTION_COMPLETE: {
-			cmd = BR_TRANSACTION_COMPLETE;
+		case BINDER_WORK_TRANSACTION_COMPLETE:
+		case BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT: {
+			cmd = proc->oneway_spam_detection_enabled &&
+				w->type == BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT ?
+				BR_ONEWAY_SPAM_SUSPECT : BR_TRANSACTION_COMPLETE;
 			if (put_user_preempt_disabled(cmd, (uint32_t __user *)ptr))
 				return -EFAULT;
 			ptr += sizeof(uint32_t);
 
 			binder_stat_br(proc, thread, cmd);
 			binder_debug(BINDER_DEBUG_TRANSACTION_COMPLETE,
-				     "%d:%d BR_TRANSACTION_COMPLETE\n",
-				     proc->pid, thread->pid);
+				     "%d:%d %s\n", proc->pid, thread->pid,
+				     cmd == BR_ONEWAY_SPAM_SUSPECT ?
+				     "BR_ONEWAY_SPAM_SUSPECT" :
+				     "BR_TRANSACTION_COMPLETE");
 
 			list_del(&w->entry);
 			kfree(w);
@@ -3199,6 +3246,7 @@ static void binder_release_work(struct list_head *list)
 				binder_stats_deleted(BINDER_STAT_TRANSACTION);
 			}
 		} break;
+		case BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT:
 		case BINDER_WORK_TRANSACTION_COMPLETE: {
 			binder_debug(BINDER_DEBUG_DEAD_TRANSACTION,
 				"undelivered TRANSACTION_COMPLETE\n");
@@ -3546,6 +3594,21 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			ret = -EFAULT;
 			goto err;
 		}
+		break;
+	}
+	case BINDER_ENABLE_ONEWAY_SPAM_DETECTION: {
+		__u32 enable;
+
+		if (size != sizeof(enable)) {
+			ret = -EINVAL;
+			goto err;
+		}
+		if (copy_from_user_preempt_disabled(&enable, ubuf,
+						   sizeof(enable))) {
+			ret = -EFAULT;
+			goto err;
+		}
+		proc->oneway_spam_detection_enabled = !!enable;
 		break;
 	}
 	case BINDER_THREAD_EXIT:
@@ -4095,6 +4158,7 @@ static void print_binder_work(struct seq_file *m, const char *prefix,
 		t = container_of(w, struct binder_transaction, work);
 		print_binder_transaction(m, transaction_prefix, t);
 		break;
+	case BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT:
 	case BINDER_WORK_TRANSACTION_COMPLETE:
 		seq_printf(m, "%stransaction complete\n", prefix);
 		break;
@@ -4244,7 +4308,9 @@ static const char * const binder_return_strings[] = {
 	"BR_FINISHED",
 	"BR_DEAD_BINDER",
 	"BR_CLEAR_DEATH_NOTIFICATION_DONE",
-	"BR_FAILED_REPLY"
+	"BR_FAILED_REPLY",
+	"BR_FROZEN_REPLY",
+	"BR_ONEWAY_SPAM_SUSPECT"
 };
 
 static const char * const binder_command_strings[] = {
