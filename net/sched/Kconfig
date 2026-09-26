@@ -323,6 +323,16 @@ config NET_CLS_BASIC
 	  To compile this code as a module, choose M here: the
 	  module will be called cls_basic.
 
+config NET_CLS_MATCHALL
+	tristate "Match-all classifier"
+	select NET_CLS
+	---help---
+	  Match every packet and apply a traffic-control action or class ID.
+	  Hardware offload is not supported by this kernel.
+
+	  To compile this code as a module, choose M here: the
+	  module will be called cls_matchall.
+
 config NET_CLS_TCINDEX
 	tristate "Traffic-Control Index (TCINDEX)"
 	select NET_CLS

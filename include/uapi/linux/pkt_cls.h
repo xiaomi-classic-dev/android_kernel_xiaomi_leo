@@ -376,6 +376,19 @@ enum {
 
 #define TCA_BASIC_MAX (__TCA_BASIC_MAX - 1)
 
+/* Match-all classifier; keep the netlink attribute numbers from upstream. */
+enum {
+	TCA_MATCHALL_UNSPEC,
+	TCA_MATCHALL_CLASSID,
+	TCA_MATCHALL_ACT,
+	TCA_MATCHALL_FLAGS,
+	__TCA_MATCHALL_MAX,
+};
+
+#define TCA_MATCHALL_MAX (__TCA_MATCHALL_MAX - 1)
+#define TCA_CLS_FLAGS_SKIP_HW (1 << 0)
+#define TCA_CLS_FLAGS_SKIP_SW (1 << 1)
+
 
 /* Cgroup classifier */
 
