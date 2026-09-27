@@ -2930,6 +2930,48 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 	return kill_something_info(sig, &info, pid);
 }
 
+SYSCALL_DEFINE4(pidfd_send_signal, int, pidfd, int, sig,
+		siginfo_t __user *, uinfo, unsigned int, flags)
+{
+	struct siginfo info;
+	struct pid *pid;
+	int ret;
+
+	if (flags || !valid_signal(sig))
+		return -EINVAL;
+
+	pid = pidfd_get_pid(pidfd);
+	if (IS_ERR(pid))
+		return PTR_ERR(pid);
+
+	if (uinfo) {
+		if (copy_from_user(&info, uinfo, sizeof(info))) {
+			ret = -EFAULT;
+			goto out;
+		}
+		if (info.si_signo != sig) {
+			ret = -EINVAL;
+			goto out;
+		}
+		if (task_pid(current) != pid &&
+		    (info.si_code >= 0 || info.si_code == SI_TKILL)) {
+			ret = -EPERM;
+			goto out;
+		}
+	} else {
+		memset(&info, 0, sizeof(info));
+		info.si_signo = sig;
+		info.si_code = SI_USER;
+		info.si_pid = task_tgid_vnr(current);
+		info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
+	}
+
+	ret = kill_pid_info(sig, &info, pid);
+out:
+	put_pid(pid);
+	return ret;
+}
+
 static int
 do_send_specific(pid_t tgid, pid_t pid, int sig, struct siginfo *info)
 {

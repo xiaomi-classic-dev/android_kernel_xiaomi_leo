@@ -881,4 +881,8 @@ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
 asmlinkage long sys_getrandom(char __user *buf, size_t count,
 			      unsigned int flags);
 asmlinkage long sys_bpf(int cmd, union bpf_attr *attr, unsigned int size);
+asmlinkage long sys_pidfd_open(pid_t pid, unsigned int flags);
+asmlinkage long sys_pidfd_send_signal(int pidfd, int sig,
+		struct siginfo __user *info, unsigned int flags);
+asmlinkage long sys_process_mrelease(int pidfd, unsigned int flags);
 #endif

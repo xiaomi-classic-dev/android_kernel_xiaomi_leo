@@ -35,6 +35,8 @@
 #include <linux/freezer.h>
 #include <linux/ftrace.h>
 #include <linux/ratelimit.h>
+#include <linux/pid.h>
+#include <linux/syscalls.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/oom.h>
@@ -115,6 +117,109 @@ found:
 	rcu_read_unlock();
 
 	return t;
+}
+
+static bool process_mrelease_will_free_mem(struct task_struct *task)
+{
+	if (task->signal->flags & SIGNAL_GROUP_COREDUMP)
+		return false;
+	if (task->signal->flags & SIGNAL_GROUP_EXIT)
+		return true;
+	return thread_group_empty(task) && (task->flags & PF_EXITING);
+}
+
+static bool process_mrelease_shares_mm(struct task_struct *task,
+					       struct mm_struct *mm)
+{
+	struct task_struct *thread;
+
+	for_each_thread(task, thread) {
+		struct mm_struct *thread_mm = ACCESS_ONCE(thread->mm);
+		if (thread_mm)
+			return thread_mm == mm;
+	}
+	return false;
+}
+
+SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
+{
+#ifdef CONFIG_MMU
+	struct pid *pid;
+	struct task_struct *task, *p, *other;
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	long ret = 0;
+	bool reap;
+
+	if (flags)
+		return -EINVAL;
+	pid = pidfd_get_pid(pidfd);
+	if (IS_ERR(pid))
+		return PTR_ERR(pid);
+	task = get_pid_task(pid, PIDTYPE_PID);
+	if (!task) {
+		ret = -ESRCH;
+		goto put_pid;
+	}
+	p = find_lock_task_mm(task);
+	if (!p) {
+		ret = -ESRCH;
+		goto put_task;
+	}
+	mm = p->mm;
+	if (!atomic_inc_not_zero(&mm->mm_users)) {
+		task_unlock(p);
+		ret = -ESRCH;
+		goto put_task;
+	}
+	reap = process_mrelease_will_free_mem(p);
+	task_unlock(p);
+	if (!reap) {
+		ret = -EINVAL;
+		goto put_mm;
+	}
+
+	/* Never discard memory still used by another live process. */
+	if (atomic_read(&mm->mm_users) > 2) {
+		rcu_read_lock();
+		for_each_process(other) {
+			if (same_thread_group(task, other) ||
+			    !process_mrelease_shares_mm(other, mm))
+				continue;
+			if (!process_mrelease_will_free_mem(other)) {
+				ret = -EINVAL;
+				break;
+			}
+		}
+		rcu_read_unlock();
+		if (ret)
+			goto put_mm;
+	}
+
+	if (!down_read_trylock(&mm->mmap_sem)) {
+		ret = -EAGAIN;
+		goto put_mm;
+	}
+	/* This kernel has no OOM reaper; zap only private anonymous mappings. */
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		if (vma->vm_file ||
+		    (vma->vm_flags & (VM_LOCKED | VM_HUGETLB | VM_PFNMAP |
+				      VM_IO | VM_SHARED)))
+			continue;
+		zap_page_range(vma, vma->vm_start,
+			       vma->vm_end - vma->vm_start, NULL);
+	}
+	up_read(&mm->mmap_sem);
+put_mm:
+	mmput(mm);
+put_task:
+	put_task_struct(task);
+put_pid:
+	put_pid(pid);
+	return ret;
+#else
+	return -ENOSYS;
+#endif
 }
 
 /* return true if the task is not adequate as candidate victim task. */

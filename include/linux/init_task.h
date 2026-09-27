@@ -63,6 +63,7 @@ extern struct group_info init_groups;
 
 #define INIT_STRUCT_PID {						\
 	.count 		= ATOMIC_INIT(1),				\
+	.wait_pidfd	= __WAIT_QUEUE_HEAD_INITIALIZER(init_struct_pid.wait_pidfd), \
 	.tasks		= {						\
 		{ .first = NULL },					\
 		{ .first = NULL },					\

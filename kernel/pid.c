@@ -38,6 +38,10 @@
 #include <linux/syscalls.h>
 #include <linux/proc_ns.h>
 #include <linux/proc_fs.h>
+#include <linux/anon_inodes.h>
+#include <linux/file.h>
+#include <linux/poll.h>
+#include <linux/err.h>
 
 #define pid_hashfn(nr, ns)	\
 	hash_long((unsigned long)nr + (unsigned long)ns, pidhash_shift)
@@ -319,6 +323,7 @@ struct pid *alloc_pid(struct pid_namespace *ns)
 
 	get_pid_ns(ns);
 	atomic_set(&pid->count, 1);
+	init_waitqueue_head(&pid->wait_pidfd);
 	for (type = 0; type < PIDTYPE_MAX; ++type)
 		INIT_HLIST_HEAD(&pid->tasks[type]);
 
@@ -495,6 +500,85 @@ struct pid *find_get_pid(pid_t nr)
 	return pid;
 }
 EXPORT_SYMBOL_GPL(find_get_pid);
+
+static unsigned int pidfd_poll(struct file *file, poll_table *wait)
+{
+	struct pid *pid = file->private_data;
+	struct task_struct *task;
+	unsigned int events = 0;
+
+	poll_wait(file, &pid->wait_pidfd, wait);
+	read_lock(&tasklist_lock);
+	task = pid_task(pid, PIDTYPE_PID);
+	if (!task || (task->exit_state && thread_group_empty(task)))
+		events = POLLIN | POLLRDNORM;
+	read_unlock(&tasklist_lock);
+
+	return events;
+}
+
+static int pidfd_release(struct inode *inode, struct file *file)
+{
+	put_pid(file->private_data);
+	return 0;
+}
+
+static const struct file_operations pidfd_fops = {
+	.poll = pidfd_poll,
+	.release = pidfd_release,
+	.llseek = no_llseek,
+};
+
+struct pid *pidfd_get_pid(int fd)
+{
+	struct file *file = fget(fd);
+	struct pid *pid;
+
+	if (!file)
+		return ERR_PTR(-EBADF);
+	if (file->f_op != &pidfd_fops) {
+		fput(file);
+		return ERR_PTR(-EBADF);
+	}
+	pid = get_pid(file->private_data);
+	fput(file);
+	return pid;
+}
+
+SYSCALL_DEFINE2(pidfd_open, pid_t, pid, unsigned int, flags)
+{
+	struct task_struct *task;
+	struct pid *p;
+	int fd;
+
+	if (flags || pid <= 0)
+		return -EINVAL;
+
+	p = find_get_pid(pid);
+	if (!p)
+		return -ESRCH;
+
+	read_lock(&tasklist_lock);
+	task = pid_task(p, PIDTYPE_PID);
+	if (!task)
+		fd = -ESRCH;
+	else if (!thread_group_leader(task))
+		fd = -EINVAL;
+	else
+		fd = 0;
+	read_unlock(&tasklist_lock);
+	if (fd)
+		goto out;
+
+	fd = anon_inode_getfd("[pidfd]", &pidfd_fops, p,
+			      O_RDWR | O_CLOEXEC);
+	if (fd >= 0)
+		p = NULL;
+
+out:
+	put_pid(p);
+	return fd;
+}
 
 pid_t pid_nr_ns(struct pid *pid, struct pid_namespace *ns)
 {

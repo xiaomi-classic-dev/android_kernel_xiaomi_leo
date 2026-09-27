@@ -172,8 +172,10 @@ static void delayed_put_task_struct(struct rcu_head *rhp)
 void release_task(struct task_struct * p)
 {
 	struct task_struct *leader;
+	struct pid *leader_pid;
 	int zap_leader;
 repeat:
+	leader_pid = NULL;
 	/* don't need to get the RCU readlock here - the process is dead and
 	 * can't be modifying its own credentials. But shut RCU-lockdep up */
 	rcu_read_lock();
@@ -193,6 +195,9 @@ repeat:
 	 */
 	zap_leader = 0;
 	leader = p->group_leader;
+	/* A leader may have exited before its last sibling thread. */
+	if (leader != p && thread_group_empty(leader) && leader->exit_state)
+		leader_pid = get_pid(task_pid(leader));
 	if (leader != p && thread_group_empty(leader) && leader->exit_state == EXIT_ZOMBIE) {
 		/*
 		 * If we were the last child thread and the leader has
@@ -205,6 +210,10 @@ repeat:
 	}
 
 	write_unlock_irq(&tasklist_lock);
+	if (leader_pid) {
+		wake_up_all(&leader_pid->wait_pidfd);
+		put_pid(leader_pid);
+	}
 	release_thread(p);
 	call_rcu(&p->rcu, delayed_put_task_struct);
 
@@ -652,6 +661,7 @@ static void forget_original_parent(struct task_struct *father)
 static void exit_notify(struct task_struct *tsk, int group_dead)
 {
 	bool autoreap;
+	struct pid *pidfd_pid = NULL;
 
 	/*
 	 * This does two things:
@@ -681,11 +691,17 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 	}
 
 	tsk->exit_state = autoreap ? EXIT_DEAD : EXIT_ZOMBIE;
+	if (group_dead && thread_group_leader(tsk))
+		pidfd_pid = get_pid(task_pid(tsk));
 
 	/* mt-exec, de_thread() is waiting for group leader */
 	if (unlikely(tsk->signal->notify_count < 0))
 		wake_up_process(tsk->signal->group_exit_task);
 	write_unlock_irq(&tasklist_lock);
+	if (pidfd_pid) {
+		wake_up_all(&pidfd_pid->wait_pidfd);
+		put_pid(pidfd_pid);
+	}
 
 	/* If the process is dead, release it - nobody will wait for it */
 	if (autoreap)
