@@ -314,6 +314,10 @@ static int map_check_btf(const struct bpf_map *map, const struct btf *btf,
 		if (BTF_INT_BITS(int_data) != 32 || BTF_INT_OFFSET(int_data))
 			return -EINVAL;
 		break;
+	case BPF_MAP_TYPE_LPM_TRIE:
+		if (BTF_INFO_KIND(key_type->info) != BTF_KIND_STRUCT)
+			return -EINVAL;
+		break;
 	case BPF_MAP_TYPE_HASH:
 	case BPF_MAP_TYPE_PERCPU_HASH:
 		break;
@@ -915,6 +919,31 @@ struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type)
 }
 EXPORT_SYMBOL_GPL(bpf_prog_get_type);
 
+static enum bpf_prog_type bpf_cgroup_prog_type(u32 type)
+{
+	switch (type) {
+	case BPF_CGROUP_INET_INGRESS:
+	case BPF_CGROUP_INET_EGRESS:
+		return BPF_PROG_TYPE_CGROUP_SKB;
+	case BPF_CGROUP_INET_SOCK_CREATE:
+		return BPF_PROG_TYPE_CGROUP_SOCK;
+	case BPF_CGROUP_INET4_BIND:
+	case BPF_CGROUP_INET6_BIND:
+	case BPF_CGROUP_INET4_CONNECT:
+	case BPF_CGROUP_INET6_CONNECT:
+	case BPF_CGROUP_UDP4_SENDMSG:
+	case BPF_CGROUP_UDP6_SENDMSG:
+	case BPF_CGROUP_UDP4_RECVMSG:
+	case BPF_CGROUP_UDP6_RECVMSG:
+		return BPF_PROG_TYPE_CGROUP_SOCK_ADDR;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+		return BPF_PROG_TYPE_CGROUP_SOCKOPT;
+	default:
+		return BPF_PROG_TYPE_UNSPEC;
+	}
+}
+
 /* last field in 'union bpf_attr' used by this command */
 #define	BPF_PROG_LOAD_LAST_FIELD expected_attach_type
 
@@ -929,12 +958,9 @@ static int bpf_prog_load(union bpf_attr *attr)
 	if (CHECK_ATTR(BPF_PROG_LOAD) || attr->prog_flags || attr->prog_ifindex)
 		return -EINVAL;
 
-	/* Existing cgroup hooks share a verifier context within each type. */
-	if (attr->expected_attach_type &&
-	    !(type == BPF_PROG_TYPE_CGROUP_SKB &&
-	      attr->expected_attach_type == BPF_CGROUP_INET_EGRESS) &&
-	    !(type == BPF_PROG_TYPE_CGROUP_SOCK &&
-	      attr->expected_attach_type == BPF_CGROUP_INET_SOCK_CREATE))
+	if ((type == BPF_PROG_TYPE_CGROUP_SOCK_ADDR ||
+	     type == BPF_PROG_TYPE_CGROUP_SOCKOPT || attr->expected_attach_type) &&
+	    bpf_cgroup_prog_type(attr->expected_attach_type) != type)
 		return -EINVAL;
 
 	/* copy eBPF program license from user space */
@@ -975,6 +1001,7 @@ static int bpf_prog_load(union bpf_attr *attr)
 	if (err)
 		goto free_prog;
 
+	prog->aux->expected_attach_type = attr->expected_attach_type;
 	prog->len = attr->insn_cnt;
 
 	err = -EFAULT;
@@ -1073,47 +1100,27 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 	if (attr->attach_flags & ~BPF_F_ATTACH_MASK)
 		return -EINVAL;
 
-	switch (attr->attach_type) {
-	case BPF_CGROUP_INET_INGRESS:
-	case BPF_CGROUP_INET_EGRESS:
-		prog = bpf_prog_get_type(attr->attach_bpf_fd,
-					 BPF_PROG_TYPE_CGROUP_SKB);
-		if (IS_ERR(prog))
-			return PTR_ERR(prog);
-
-		cgrp = cgroup_get_from_fd(attr->target_fd);
-		if (IS_ERR(cgrp)) {
-			bpf_prog_put(prog);
-			return PTR_ERR(cgrp);
-		}
-
-		ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
-					attr->attach_flags);
-		if (ret)
-			bpf_prog_put(prog);
-		cgroup_put(cgrp);
-		break;
-	case BPF_CGROUP_INET_SOCK_CREATE:
-		prog = bpf_prog_get_type(attr->attach_bpf_fd,
-					 BPF_PROG_TYPE_CGROUP_SOCK);
-		if (IS_ERR(prog))
-			return PTR_ERR(prog);
-
-		cgrp = cgroup_get_from_fd(attr->target_fd);
-		if (IS_ERR(cgrp)) {
-			bpf_prog_put(prog);
-			return PTR_ERR(cgrp);
-		}
-
-		ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
-					attr->attach_flags);
-		if (ret)
-			bpf_prog_put(prog);
-		cgroup_put(cgrp);
-		break;
-	default:
+	if (bpf_cgroup_prog_type(attr->attach_type) == BPF_PROG_TYPE_UNSPEC)
+		return -EINVAL;
+	prog = bpf_prog_get_type(attr->attach_bpf_fd,
+				 bpf_cgroup_prog_type(attr->attach_type));
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+	if ((prog->type == BPF_PROG_TYPE_CGROUP_SOCK_ADDR ||
+	     prog->type == BPF_PROG_TYPE_CGROUP_SOCKOPT) &&
+	    prog->aux->expected_attach_type != attr->attach_type) {
+		bpf_prog_put(prog);
 		return -EINVAL;
 	}
+	cgrp = cgroup_get_from_fd(attr->target_fd);
+	if (IS_ERR(cgrp)) {
+		bpf_prog_put(prog);
+		return PTR_ERR(cgrp);
+	}
+	ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type, attr->attach_flags);
+	if (ret)
+		bpf_prog_put(prog);
+	cgroup_put(cgrp);
 
 	return ret;
 }
@@ -1133,17 +1140,9 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	if (CHECK_ATTR(BPF_PROG_DETACH))
 		return -EINVAL;
 
-	switch (attr->attach_type) {
-	case BPF_CGROUP_INET_INGRESS:
-	case BPF_CGROUP_INET_EGRESS:
-		ptype = BPF_PROG_TYPE_CGROUP_SKB;
-		break;
-	case BPF_CGROUP_INET_SOCK_CREATE:
-		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
-		break;
-	default:
+	ptype = bpf_cgroup_prog_type(attr->attach_type);
+	if (ptype == BPF_PROG_TYPE_UNSPEC)
 		return -EINVAL;
-	}
 
 	cgrp = cgroup_get_from_fd(attr->target_fd);
 	if (IS_ERR(cgrp))
@@ -1159,6 +1158,27 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	cgroup_put(cgrp);
 	return ret;
 }
+#define BPF_PROG_QUERY_LAST_FIELD query.prog_cnt
+
+static int bpf_prog_query(const union bpf_attr *attr, union bpf_attr __user *uattr)
+{
+	struct cgroup *cgrp;
+	int ret;
+
+	if (!capable(CAP_NET_ADMIN))
+		return -EPERM;
+	if (CHECK_ATTR(BPF_PROG_QUERY) || attr->query.attach_flags ||
+	    (attr->query.query_flags & ~BPF_F_QUERY_EFFECTIVE) ||
+	    bpf_cgroup_prog_type(attr->query.attach_type) == BPF_PROG_TYPE_UNSPEC)
+		return -EINVAL;
+	cgrp = cgroup_get_from_fd(attr->query.target_fd);
+	if (IS_ERR(cgrp))
+		return PTR_ERR(cgrp);
+	ret = cgroup_bpf_query(cgrp, attr, uattr);
+	cgroup_put(cgrp);
+	return ret;
+}
+
 #endif /* CONFIG_CGROUP_BPF */
 
 #define BPF_OBJ_GET_NEXT_ID_LAST_FIELD next_id
@@ -1430,6 +1450,9 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 
 #ifdef CONFIG_CGROUP_BPF
+	case BPF_PROG_QUERY:
+		err = bpf_prog_query(&attr, uattr);
+		break;
 	case BPF_PROG_ATTACH:
 		err = bpf_prog_attach(&attr);
 		break;

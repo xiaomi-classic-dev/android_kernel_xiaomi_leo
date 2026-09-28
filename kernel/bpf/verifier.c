@@ -188,6 +188,10 @@ static const char * const reg_type_str[] = {
 	[CONST_IMM]		= "imm",
 	[PTR_TO_PACKET]		= "pkt",
 	[PTR_TO_PACKET_END]	= "pkt_end",
+	[PTR_TO_SOCK_COMMON] = "sock_common",
+	[PTR_TO_SOCK_COMMON_OR_NULL] = "sock_common_or_null",
+	[PTR_TO_SOCKET] = "sock",
+	[PTR_TO_SOCKET_OR_NULL] = "sock_or_null",
 };
 
 static void print_verifier_state(struct bpf_verifier_state *state)
@@ -526,6 +530,10 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
 	case PTR_TO_MAP_VALUE:
 	case PTR_TO_MAP_VALUE_OR_NULL:
 	case PTR_TO_STACK:
+	case PTR_TO_SOCK_COMMON:
+	case PTR_TO_SOCK_COMMON_OR_NULL:
+	case PTR_TO_SOCKET:
+	case PTR_TO_SOCKET_OR_NULL:
 	case PTR_TO_CTX:
 	case PTR_TO_PACKET:
 	case PTR_TO_PACKET_END:
@@ -660,6 +668,7 @@ static bool may_access_direct_pkt_data(struct bpf_verifier_env *env,
 	case BPF_PROG_TYPE_SCHED_CLS:
 	case BPF_PROG_TYPE_SCHED_ACT:
 	case BPF_PROG_TYPE_XDP:
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 		if (meta)
 			return meta->pkt_access;
 
@@ -693,8 +702,10 @@ static int check_ctx_access(struct bpf_verifier_env *env, int off, int size,
 	if (env->analyzer_ops)
 		return 0;
 
-	if (env->prog->aux->ops->is_valid_access &&
-	    env->prog->aux->ops->is_valid_access(off, size, t, reg_type)) {
+	if ((env->prog->aux->ops->is_valid_access_prog &&
+	     env->prog->aux->ops->is_valid_access_prog(off, size, t, env->prog, reg_type)) ||
+	    (env->prog->aux->ops->is_valid_access &&
+	     env->prog->aux->ops->is_valid_access(off, size, t, reg_type))) {
 		/* remember the offset of last byte accessed in ctx */
 		if (env->prog->aux->max_ctx_offset < off + size)
 			env->prog->aux->max_ctx_offset = off + size;
@@ -852,8 +863,15 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			mark_reg_unknown_value(state->regs, value_regno);
 			/* note that reg.[id|off|range] == 0 */
 			state->regs[value_regno].type = reg_type;
+			if (reg_type == PTR_TO_SOCK_COMMON_OR_NULL)
+				state->regs[value_regno].id = ++env->id_gen;
 		}
 
+	} else if (reg->type == PTR_TO_SOCKET) {
+		if (!bpf_sock_is_valid_access(off, size, t))
+			return -EACCES;
+		if (value_regno >= 0)
+			mark_reg_unknown_value(state->regs, value_regno);
 	} else if (reg->type == FRAME_PTR || reg->type == PTR_TO_STACK) {
 		if (off >= 0 || off < -MAX_BPF_STACK) {
 			verbose("invalid stack off=%d size=%d\n", off, size);
@@ -1035,6 +1053,10 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		expected_type = CONST_PTR_TO_MAP;
 		if (type != expected_type)
 			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
+		expected_type = PTR_TO_SOCK_COMMON;
+		if (type != PTR_TO_SOCK_COMMON && type != PTR_TO_SOCKET)
+			goto err_type;
 	} else if (arg_type == ARG_PTR_TO_CTX) {
 		expected_type = PTR_TO_CTX;
 		if (type != expected_type)
@@ -1048,7 +1070,8 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		 */
 		if (type == CONST_IMM && reg->imm == 0)
 			/* final test in check_stack_boundary() */;
-		else if (type != PTR_TO_PACKET && type != expected_type)
+		else if (type != PTR_TO_PACKET && type != PTR_TO_MAP_VALUE &&
+			 type != PTR_TO_MAP_VALUE_ADJ && type != expected_type)
 			goto err_type;
 		meta->raw_mode = arg_type == ARG_PTR_TO_RAW_STACK;
 	} else {
@@ -1109,7 +1132,31 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			verbose("ARG_CONST_STACK_SIZE cannot be first argument\n");
 			return -EACCES;
 		}
-		if (regs[regno - 1].type == PTR_TO_PACKET)
+		if (regs[regno - 1].type == PTR_TO_MAP_VALUE ||
+		    regs[regno - 1].type == PTR_TO_MAP_VALUE_ADJ) {
+			struct bpf_reg_state *buf = &regs[regno - 1];
+			s64 min_off = 0, max_off = 0;
+
+			if (buf->type == PTR_TO_MAP_VALUE_ADJ) {
+				min_off = buf->min_value;
+				max_off = buf->max_value;
+				env->varlen_map_value_access = true;
+			}
+			/* Helpers may read a bounded map buffer, or fill it when
+			 * their argument is RAW_STACK. Do not mark stack slots for
+			 * such writes. Use subtraction to avoid offset overflow.
+			 */
+			if (reg->imm < 0 || (!zero_size_allowed && !reg->imm) ||
+			    reg->imm > buf->map_ptr->value_size || min_off < 0 ||
+			    max_off < min_off ||
+			    max_off > buf->map_ptr->value_size - reg->imm ||
+			    (meta->raw_mode &&
+			     (buf->map_ptr->map_flags & BPF_F_RDONLY_PROG))) {
+				verbose("invalid helper access to map value R%d size=%lld\n",
+					regno - 1, (long long)reg->imm);
+				return -EACCES;
+			}
+		} else if (regs[regno - 1].type == PTR_TO_PACKET)
 			err = check_packet_access(env, regno - 1, 0, reg->imm);
 		else
 			err = check_stack_boundary(env, regno - 1, reg->imm,
@@ -1130,6 +1177,8 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 
 	/* We need a two way check, first is from map perspective ... */
 	switch (map->map_type) {
+	case BPF_MAP_TYPE_DEVMAP_HASH:
+		goto error;
 	case BPF_MAP_TYPE_PROG_ARRAY:
 		if (func_id != BPF_FUNC_tail_call)
 			goto error;
@@ -1325,6 +1374,10 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 			return -EINVAL;
 		}
 		regs[BPF_REG_0].map_ptr = meta.map_ptr;
+		regs[BPF_REG_0].id = ++env->id_gen;
+	} else if (fn->ret_type == RET_PTR_TO_SOCKET_OR_NULL) {
+		regs[BPF_REG_0].type = PTR_TO_SOCKET_OR_NULL;
+		regs[BPF_REG_0].imm = 0;
 		regs[BPF_REG_0].id = ++env->id_gen;
 	} else {
 		verbose("unknown return type %d of func %d\n",
@@ -2199,7 +2252,9 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 {
 	struct bpf_reg_state *reg = &regs[regno];
 
-	if (reg->type == PTR_TO_MAP_VALUE_OR_NULL && reg->id == id) {
+	if ((reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	     reg->type == PTR_TO_SOCK_COMMON_OR_NULL ||
+	     reg->type == PTR_TO_SOCKET_OR_NULL) && reg->id == id) {
 		reg->type = type;
 		/* We don't need id from this point onwards anymore, thus we
 		 * should better reset it, so that state pruning has chances
@@ -2317,14 +2372,19 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	/* detect if R == 0 where R is returned from bpf_map_lookup_elem() */
 	if (BPF_SRC(insn->code) == BPF_K &&
 	    insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE) &&
-	    dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL) {
+	    (dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	     dst_reg->type == PTR_TO_SOCK_COMMON_OR_NULL ||
+	     dst_reg->type == PTR_TO_SOCKET_OR_NULL)) {
 		/* Mark all identical map registers in each branch as either
 		 * safe or unknown depending R == 0 or R != 0 conditional.
 		 */
+		enum bpf_reg_type live = dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ?
+			PTR_TO_MAP_VALUE : dst_reg->type == PTR_TO_SOCKET_OR_NULL ?
+			PTR_TO_SOCKET : PTR_TO_SOCK_COMMON;
 		mark_map_regs(this_branch, insn->dst_reg,
-			      opcode == BPF_JEQ ? PTR_TO_MAP_VALUE : UNKNOWN_VALUE);
+			      opcode == BPF_JEQ ? live : UNKNOWN_VALUE);
 		mark_map_regs(other_branch, insn->dst_reg,
-			      opcode == BPF_JEQ ? UNKNOWN_VALUE : PTR_TO_MAP_VALUE);
+			      opcode == BPF_JEQ ? UNKNOWN_VALUE : live);
 	} else if (BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGT &&
 		   dst_reg->type == PTR_TO_PACKET &&
 		   regs[insn->src_reg].type == PTR_TO_PACKET_END) {
@@ -2988,8 +3048,8 @@ static int do_check(struct bpf_verifier_env *env)
 				*prev_src_type = src_reg_type;
 
 			} else if (src_reg_type != *prev_src_type &&
-				   (src_reg_type == PTR_TO_CTX ||
-				    *prev_src_type == PTR_TO_CTX)) {
+				   (src_reg_type == PTR_TO_CTX || src_reg_type == PTR_TO_SOCKET ||
+				    *prev_src_type == PTR_TO_CTX || *prev_src_type == PTR_TO_SOCKET)) {
 				/* ABuser program is trying to use the same insn
 				 * dst_reg = *(u32*) (src_reg + off)
 				 * with different pointer types:
@@ -3424,11 +3484,14 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			continue;
 		}
 
-		if (env->insn_aux_data[i + delta].ptr_type != PTR_TO_CTX)
+		if (env->insn_aux_data[i + delta].ptr_type == PTR_TO_SOCKET)
+			cnt = bpf_sock_convert_ctx_access(type, insn->dst_reg,
+				insn->src_reg, insn->off, insn_buf, env->prog);
+		else if (env->insn_aux_data[i + delta].ptr_type == PTR_TO_CTX)
+			cnt = ops->convert_ctx_access(type, insn->dst_reg, insn->src_reg,
+						      insn->off, insn_buf, env->prog);
+		else
 			continue;
-
-		cnt = ops->convert_ctx_access(type, insn->dst_reg, insn->src_reg,
-					      insn->off, insn_buf, env->prog);
 		if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf)) {
 			verbose("bpf verifier is misconfigured\n");
 			return -EINVAL;

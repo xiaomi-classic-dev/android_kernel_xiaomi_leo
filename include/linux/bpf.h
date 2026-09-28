@@ -89,12 +89,14 @@ enum bpf_arg_type {
 	ARG_CONST_STACK_SIZE_OR_ZERO, /* number of bytes accessed from stack or 0 */
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
+	ARG_PTR_TO_SOCK_COMMON,
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
 };
 
 /* type of values returned from helper functions */
 enum bpf_return_type {
 	RET_INTEGER,			/* function returns integer */
+	RET_PTR_TO_SOCKET_OR_NULL,
 	RET_VOID,			/* function doesn't return anything */
 	RET_PTR_TO_MAP_VALUE_OR_NULL,	/* returns a pointer to map elem value or NULL */
 };
@@ -156,6 +158,10 @@ enum bpf_reg_type {
 	 * map element.
 	 */
 	PTR_TO_MAP_VALUE_ADJ,
+	PTR_TO_SOCK_COMMON,
+	PTR_TO_SOCK_COMMON_OR_NULL,
+	PTR_TO_SOCKET,
+	PTR_TO_SOCKET_OR_NULL,
 };
 
 struct bpf_prog;
@@ -169,6 +175,9 @@ struct bpf_verifier_ops {
 	 */
 	bool (*is_valid_access)(int off, int size, enum bpf_access_type type,
 				enum bpf_reg_type *reg_type);
+	/* Contexts whose access permissions depend on the expected attach hook. */
+	bool (*is_valid_access_prog)(int off, int size, enum bpf_access_type type,
+		const struct bpf_prog *prog, enum bpf_reg_type *reg_type);
 	int (*gen_prologue)(struct bpf_insn *insn, bool direct_write,
 			    const struct bpf_prog *prog);
 	u32 (*convert_ctx_access)(enum bpf_access_type type, int dst_reg,
@@ -186,6 +195,7 @@ struct bpf_prog_aux {
 	atomic_t refcnt;
 	u32 used_map_cnt;
 	u32 max_ctx_offset;
+	u32 expected_attach_type;
 	u32 id;
 	struct list_head ksym_lnode;
 	char name[BPF_OBJ_NAME_LEN];
@@ -408,6 +418,10 @@ static inline struct bpf_prog *bpf_prog_get_type_path(const char *name,
 	return ERR_PTR(-EOPNOTSUPP);
 }
 #endif /* CONFIG_BPF_SYSCALL */
+
+bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type);
+u32 bpf_sock_convert_ctx_access(enum bpf_access_type type, int dst_reg,
+	int src_reg, int ctx_off, struct bpf_insn *insn_buf, struct bpf_prog *prog);
 
 /* verifier prototypes for helper functions called from eBPF programs */
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;

@@ -790,7 +790,7 @@ EXPORT_SYMBOL_GPL(__bpf_call_base);
 static unsigned int __bpf_prog_run(const struct sk_buff *ctx, const struct bpf_insn *insn)
 {
 	u64 stack[MAX_BPF_STACK / sizeof(u64)];
-	u64 regs[MAX_BPF_REG], tmp;
+	u64 regs[MAX_BPF_JIT_REG], tmp;
 	static const void *jumptable[256] = {
 		[0 ... 255] = &&default_label,
 		/* Now overwrite non-defaults ... */

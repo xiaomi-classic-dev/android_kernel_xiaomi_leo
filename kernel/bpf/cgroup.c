@@ -15,6 +15,10 @@
 #include <linux/bpf.h>
 #include <linux/bpf-cgroup.h>
 #include <net/sock.h>
+#include <linux/filter.h>
+#include <linux/uaccess.h>
+#include <linux/in.h>
+#include <linux/in6.h>
 
 DEFINE_STATIC_KEY_FALSE(cgroup_bpf_enabled_key);
 EXPORT_SYMBOL(cgroup_bpf_enabled_key);
@@ -438,22 +442,236 @@ EXPORT_SYMBOL(__cgroup_bpf_run_filter);
  * This function will return %-EPERM if any if an attached program was found
  * and if it returned != 1 during execution. In all other cases, 0 is returned.
  */
-int __cgroup_bpf_run_filter_sk(struct sock *sk,
-			       enum bpf_attach_type type)
+int __cgroup_bpf_run_filter_sk(struct sock *sk, enum bpf_attach_type type)
 {
 	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
-	struct bpf_prog *prog;
+	int ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[type], sk, BPF_PROG_RUN);
+	return ret == 1 ? 0 : -EPERM;
+}
+
+EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);
+
+/* Called with cgroup_mutex held, which pins both attached and effective lists. */
+int __cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
+		       union bpf_attr __user *uattr)
+{
+	u32 __user *ids = (u32 __user *)(unsigned long)attr->query.prog_ids;
+	enum bpf_attach_type type = attr->query.attach_type;
+	struct bpf_prog_array *array;
+	struct bpf_prog_list *pl;
+	u32 cnt = 0, copied = 0, limit = attr->query.prog_cnt;
 	int ret = 0;
 
-
-	rcu_read_lock();
-
-	prog = rcu_dereference(cgrp->bpf.effective[type]->progs[0]);
-	if (prog)
-		ret = BPF_PROG_RUN(prog, sk) == 1 ? 0 : -EPERM;
-
-	rcu_read_unlock();
-
+	array = rcu_dereference_protected(cgrp->bpf.effective[type], 1);
+	if (attr->query.query_flags & BPF_F_QUERY_EFFECTIVE) {
+		if (array)
+			while (array->progs[cnt])
+				cnt++;
+	} else {
+		cnt = prog_list_length(&cgrp->bpf.progs[type]);
+	}
+	if (put_user(cgrp->bpf.flags[type], &uattr->query.attach_flags) ||
+	    put_user(cnt, &uattr->query.prog_cnt))
+		return -EFAULT;
+	if (!ids || !limit || !cnt)
+		return 0;
+	if (limit < cnt)
+		ret = -ENOSPC;
+	limit = min(limit, cnt);
+	if (attr->query.query_flags & BPF_F_QUERY_EFFECTIVE) {
+		for (copied = 0; copied < limit; copied++)
+			if (put_user(array->progs[copied]->aux->id, ids + copied))
+				return -EFAULT;
+	} else {
+		list_for_each_entry(pl, &cgrp->bpf.progs[type], node) {
+			if (!pl->prog)
+				continue;
+			if (put_user(pl->prog->aux->id, ids + copied))
+				return -EFAULT;
+			if (++copied == limit)
+				break;
+		}
+	}
 	return ret;
 }
-EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);
+
+/* Socket-address programs operate on a scalar ABI shadow. Only verified,
+ * writable sockaddr fields are copied back, while family/type/protocol stay
+ * immutable. The socket is locked by the caller or by the wrapper below.
+ */
+int __cgroup_bpf_run_sock_addr(struct sock *sk, struct sockaddr *addr,
+			     int addrlen, enum bpf_attach_type type)
+{
+	struct bpf_sock_addr_kern ctx = { .sk = sk };
+	struct cgroup *cgrp;
+	int ret;
+
+	if (!sk || (sk->sk_family != AF_INET && sk->sk_family != AF_INET6))
+		return 0;
+	if (!addr || addrlen < sizeof(addr->sa_family))
+		return -EINVAL;
+	if (addr->sa_family == AF_UNSPEC && type != BPF_CGROUP_INET4_BIND)
+		return 0;
+	ctx.user.user_family = addr->sa_family;
+	ctx.user.family = sk->sk_family;
+	ctx.user.type = sk->sk_type;
+	ctx.user.protocol = sk->sk_protocol;
+	if (addr->sa_family == AF_INET ||
+	    (addr->sa_family == AF_UNSPEC && type == BPF_CGROUP_INET4_BIND)) {
+		struct sockaddr_in *a = (struct sockaddr_in *)addr;
+		if (addrlen < sizeof(*a))
+			return -EINVAL;
+		ctx.user.user_ip4 = a->sin_addr.s_addr;
+		ctx.user.user_port = a->sin_port;
+	} else if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6 *a = (struct sockaddr_in6 *)addr;
+		if (addrlen < offsetof(struct sockaddr_in6, sin6_scope_id))
+			return -EINVAL;
+		memcpy(ctx.user.user_ip6, &a->sin6_addr, 16);
+		ctx.user.user_port = a->sin6_port;
+	} else {
+		return 0;
+	}
+	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[type], &ctx, BPF_PROG_RUN);
+	if (ret != 1)
+		return -EPERM;
+	if (addr->sa_family == AF_INET || addr->sa_family == AF_UNSPEC) {
+		struct sockaddr_in *a = (struct sockaddr_in *)addr;
+		a->sin_addr.s_addr = ctx.user.user_ip4;
+		a->sin_port = ctx.user.user_port;
+	} else {
+		struct sockaddr_in6 *a = (struct sockaddr_in6 *)addr;
+		memcpy(&a->sin6_addr, ctx.user.user_ip6, 16);
+		a->sin6_port = ctx.user.user_port;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(__cgroup_bpf_run_sock_addr);
+
+int cgroup_bpf_run_sock_addr(struct sock *sk, struct sockaddr *addr,
+			    int addrlen, enum bpf_attach_type type)
+{
+	int ret;
+	lock_sock(sk);
+	ret = __cgroup_bpf_run_sock_addr(sk, addr, addrlen, type);
+	release_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL(cgroup_bpf_run_sock_addr);
+
+static bool cgroup_has_sockopt(struct cgroup *cgrp, enum bpf_attach_type type)
+{
+	struct bpf_prog_array *array;
+	bool found;
+	rcu_read_lock();
+	array = rcu_dereference(cgrp->bpf.effective[type]);
+	found = array && READ_ONCE(array->progs[0]);
+	rcu_read_unlock();
+	return found;
+}
+
+int __cgroup_bpf_setsockopt(struct sock *sk, int *level, int *optname,
+	char __user *optval, int *optlen, char **kernel_optval)
+{
+	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	struct bpf_sockopt_kern ctx = {
+		.sk = sk, .level = *level, .optname = *optname, .optlen = *optlen,
+	};
+	int ret, size;
+
+	if (!cgroup_has_sockopt(cgrp, BPF_CGROUP_SETSOCKOPT))
+		return 0;
+	if (*optlen < 0)
+		return -EINVAL;
+	size = min_t(int, max_t(int, 16, *optlen), PAGE_SIZE);
+	ctx.optval = kzalloc(size, GFP_USER);
+	if (!ctx.optval)
+		return -ENOMEM;
+	ctx.optval_end = ctx.optval + size;
+	if (copy_from_user(ctx.optval, optval, min_t(int, *optlen, size))) {
+		ret = -EFAULT;
+		goto out;
+	}
+	lock_sock(sk);
+	ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[BPF_CGROUP_SETSOCKOPT],
+				       &ctx, BPF_PROG_RUN);
+	release_sock(sk);
+	if (ret != 1) {
+		ret = -EPERM;
+	} else if (ctx.optlen == -1) {
+		ret = 1; /* BPF handled the option; bypass the protocol. */
+	} else if (ctx.optlen == 0) {
+		ret = 0; /* Use the original user option, including buffers > PAGE_SIZE. */
+	} else if (ctx.optlen < -1 || ctx.optlen > size) {
+		ret = -EFAULT;
+	} else {
+		*level = ctx.level;
+		*optname = ctx.optname;
+		*optlen = ctx.optlen;
+		*kernel_optval = ctx.optval;
+		return 0;
+	}
+out:
+	kfree(ctx.optval);
+	return ret;
+}
+EXPORT_SYMBOL(__cgroup_bpf_setsockopt);
+
+int __cgroup_bpf_getsockopt(struct sock *sk, int level, int optname,
+	char __user *optval, int __user *optlen, int max_optlen, int retval)
+{
+	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
+	struct bpf_sockopt_kern ctx = {
+		.sk = sk, .level = level, .optname = optname, .retval = retval,
+	};
+	int size, ret;
+
+	if (!cgroup_has_sockopt(cgrp, BPF_CGROUP_GETSOCKOPT))
+		return retval;
+	if (max_optlen < 0)
+		return -EINVAL;
+	size = min_t(int, max_optlen, PAGE_SIZE);
+	ctx.optval = kzalloc(max_t(int, size, 1), GFP_USER);
+	if (!ctx.optval)
+		return -ENOMEM;
+	ctx.optval_end = ctx.optval + size;
+	ctx.optlen = size;
+	if (!retval) {
+		if (get_user(ctx.optlen, optlen) || ctx.optlen < 0) {
+			ret = -EFAULT;
+			goto out;
+		}
+		ctx.optlen = min(ctx.optlen, size);
+		if (copy_from_user(ctx.optval, optval, ctx.optlen)) {
+			ret = -EFAULT;
+			goto out;
+		}
+	}
+	lock_sock(sk);
+	ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT],
+				       &ctx, BPF_PROG_RUN);
+	release_sock(sk);
+	if (ret != 1) {
+		ret = -EPERM;
+		goto out;
+	}
+	if (ctx.optlen == 0) {
+		ret = retval; /* Android's program requests the original kernel reply. */
+		goto out;
+	}
+	if (ctx.optlen < 0 || ctx.optlen > size ||
+	    (ctx.retval != 0 && ctx.retval != retval)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	if (copy_to_user(optval, ctx.optval, ctx.optlen) || put_user(ctx.optlen, optlen)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = ctx.retval;
+out:
+	kfree(ctx.optval);
+	return ret;
+}
+EXPORT_SYMBOL(__cgroup_bpf_getsockopt);

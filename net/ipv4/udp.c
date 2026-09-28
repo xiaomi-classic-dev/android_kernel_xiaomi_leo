@@ -914,6 +914,7 @@ int udp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
 	struct sk_buff *skb;
 	struct ip_options_data opt_copy;
+	struct sockaddr_in bpf_addr;
 
 	if (len > 0xFFFF)
 		return -EMSGSIZE;
@@ -974,6 +975,19 @@ int udp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		 */
 		connected = 1;
 	}
+	bpf_addr.sin_family = AF_INET;
+	bpf_addr.sin_port = dport;
+	bpf_addr.sin_addr.s_addr = daddr;
+	err = BPF_CGROUP_SOCK_ADDR_LOCK(sk, (struct sockaddr *)&bpf_addr,
+				       sizeof(bpf_addr), BPF_CGROUP_UDP4_SENDMSG);
+	if (err)
+		return err;
+	if (daddr != bpf_addr.sin_addr.s_addr || dport != bpf_addr.sin_port)
+		connected = 0;
+	daddr = bpf_addr.sin_addr.s_addr;
+	dport = bpf_addr.sin_port;
+	if (!dport)
+		return -EINVAL;
 	ipc.addr = inet->inet_saddr;
 
 	ipc.oif = sk->sk_bound_dev_if;
@@ -1348,6 +1362,10 @@ try_again:
 		sin->sin_addr.s_addr = ip_hdr(skb)->saddr;
 		memset(sin->sin_zero, 0, sizeof(sin->sin_zero));
 		*addr_len = sizeof(*sin);
+		err = BPF_CGROUP_SOCK_ADDR_LOCK(sk, (struct sockaddr *)sin,
+					       sizeof(*sin), BPF_CGROUP_UDP4_RECVMSG);
+		if (err)
+			goto out_free;
 	}
 	if (inet->cmsg_flags)
 		ip_cmsg_recv(msg, skb);

@@ -493,6 +493,10 @@ try_again:
 						    IP6CB(skb)->iif);
 		}
 		*addr_len = sizeof(*sin6);
+		err = BPF_CGROUP_SOCK_ADDR_LOCK(sk, (struct sockaddr *)sin6,
+					       sizeof(*sin6), BPF_CGROUP_UDP6_RECVMSG);
+		if (err)
+			goto out_free;
 	}
 	if (is_udp4) {
 		if (inet->cmsg_flags)
@@ -1059,6 +1063,7 @@ int udpv6_sendmsg(struct kiocb *iocb, struct sock *sk,
 	int corkreq = up->corkflag || msg->msg_flags&MSG_MORE;
 	int err;
 	int connected = 0;
+	struct sockaddr_in6 bpf_addr;
 	int is_udplite = IS_UDPLITE(sk);
 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
 
@@ -1173,6 +1178,23 @@ do_udp_sendmsg:
 		connected = 1;
 	}
 
+	memset(&bpf_addr, 0, sizeof(bpf_addr));
+	bpf_addr.sin6_family = AF_INET6;
+	bpf_addr.sin6_port = fl6.fl6_dport;
+	bpf_addr.sin6_addr = *daddr;
+	err = BPF_CGROUP_SOCK_ADDR_LOCK(sk, (struct sockaddr *)&bpf_addr,
+				       sizeof(bpf_addr), BPF_CGROUP_UDP6_SENDMSG);
+	if (err)
+		goto out;
+	if (!ipv6_addr_equal(daddr, &bpf_addr.sin6_addr) ||
+	    fl6.fl6_dport != bpf_addr.sin6_port)
+		connected = 0;
+	daddr = &bpf_addr.sin6_addr;
+	fl6.fl6_dport = bpf_addr.sin6_port;
+	if (!fl6.fl6_dport) {
+		err = -EINVAL;
+		goto out;
+	}
 	if (!fl6.flowi6_oif)
 		fl6.flowi6_oif = sk->sk_bound_dev_if;
 

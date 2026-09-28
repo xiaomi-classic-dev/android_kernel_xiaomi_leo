@@ -20,6 +20,7 @@
 #include <linux/socket.h>
 #include <linux/syscalls.h>
 #include <linux/filter.h>
+#include <linux/bpf-cgroup.h>
 #include <linux/compat.h>
 #include <linux/security.h>
 #include <linux/export.h>
@@ -397,6 +398,9 @@ asmlinkage long compat_sys_setsockopt(int fd, int level, int optname,
 				char __user *optval, unsigned int optlen)
 {
 	int err;
+	int bpf_optlen = optlen;
+	char *kernel_optval = NULL;
+	mm_segment_t oldfs = get_fs();
 	struct socket *sock = sockfd_lookup(fd, &err);
 
 	if (sock) {
@@ -404,6 +408,18 @@ asmlinkage long compat_sys_setsockopt(int fd, int level, int optname,
 		if (err) {
 			sockfd_put(sock);
 			return err;
+		}
+
+		err = BPF_CGROUP_SETSOCKOPT(sock->sk, &level, &optname,
+					   optval, &bpf_optlen, &kernel_optval);
+		if (err) {
+			sockfd_put(sock);
+			return err < 0 ? err : 0;
+		}
+		optlen = bpf_optlen;
+		if (kernel_optval) {
+			set_fs(KERNEL_DS);
+			optval = (char __user __force *)kernel_optval;
 		}
 
 		if (level == SOL_SOCKET)
@@ -415,6 +431,10 @@ asmlinkage long compat_sys_setsockopt(int fd, int level, int optname,
 		else
 			err = sock->ops->setsockopt(sock, level,
 					optname, optval, optlen);
+		if (kernel_optval) {
+			set_fs(oldfs);
+			kfree(kernel_optval);
+		}
 		sockfd_put(sock);
 	}
 	return err;
@@ -517,6 +537,7 @@ asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
 				char __user *optval, int __user *optlen)
 {
 	int err;
+	int max_optlen = 0;
 	struct socket *sock = sockfd_lookup(fd, &err);
 
 	if (sock) {
@@ -525,6 +546,13 @@ asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
 			sockfd_put(sock);
 			return err;
 		}
+
+#ifdef CONFIG_CGROUP_BPF
+		if (cgroup_bpf_enabled && get_user(max_optlen, optlen)) {
+			sockfd_put(sock);
+			return -EFAULT;
+		}
+#endif
 
 		if (level == SOL_SOCKET)
 			err = compat_sock_getsockopt(sock, level,
@@ -535,6 +563,8 @@ asmlinkage long compat_sys_getsockopt(int fd, int level, int optname,
 		else
 			err = sock->ops->getsockopt(sock, level,
 					optname, optval, optlen);
+		err = BPF_CGROUP_GETSOCKOPT(sock->sk, level, optname, optval,
+					   optlen, max_optlen, err);
 		sockfd_put(sock);
 	}
 	return err;

@@ -354,6 +354,8 @@ struct sock {
 	atomic_t		sk_omem_alloc;
 	int			sk_sndbuf;
 	struct sk_buff_head	sk_write_queue;
+	/* Zero-size marker preserves the flags layout for BPF access. */
+	unsigned int __sk_flags_offset[0];
 	kmemcheck_bitfield_begin(flags);
 	unsigned int		sk_shutdown  : 2,
 				sk_no_check  : 2,

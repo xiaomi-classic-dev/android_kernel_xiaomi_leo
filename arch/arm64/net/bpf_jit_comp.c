@@ -45,8 +45,8 @@ void bpf_jit_free_exec(void *addr)
 	vfree(addr);
 }
 
-#define TMP_REG_1 (MAX_BPF_REG + 0)
-#define TMP_REG_2 (MAX_BPF_REG + 1)
+#define TMP_REG_1 (MAX_BPF_JIT_REG + 0)
+#define TMP_REG_2 (MAX_BPF_JIT_REG + 1)
 
 /* Map BPF registers to A64 registers */
 static const int bpf2a64[] = {
@@ -65,6 +65,8 @@ static const int bpf2a64[] = {
 	[BPF_REG_9] = A64_R(22),
 	/* read-only frame pointer to access stack */
 	[BPF_REG_FP] = A64_R(25),
+	/* Verifier/constant-blinding scratch register, distinct from JIT temps. */
+	[BPF_REG_AX] = A64_R(9),
 	/* temporary register for internal BPF JIT */
 	[TMP_REG_1] = A64_R(23),
 	[TMP_REG_2] = A64_R(24),

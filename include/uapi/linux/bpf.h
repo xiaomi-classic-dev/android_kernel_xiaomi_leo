@@ -79,6 +79,7 @@ enum bpf_cmd {
 	BPF_PROG_GET_NEXT_ID = 11,
 	BPF_MAP_GET_NEXT_ID = 12,
 	BPF_OBJ_GET_INFO_BY_FD = 15,
+	BPF_PROG_QUERY = 16,
 	BPF_BTF_LOAD = 18,
 	BPF_BTF_GET_FD_BY_ID = 19,
 };
@@ -96,6 +97,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_PERCPU_ARRAY,
 	BPF_MAP_TYPE_STACK_TRACE,
 	BPF_MAP_TYPE_CGROUP_ARRAY,
+	BPF_MAP_TYPE_LPM_TRIE = 11,
+	BPF_MAP_TYPE_DEVMAP_HASH = 25,
 };
 
 enum bpf_prog_type {
@@ -109,12 +112,24 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_PERF_EVENT,
 	BPF_PROG_TYPE_CGROUP_SKB,
 	BPF_PROG_TYPE_CGROUP_SOCK,
+	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
 };
 
 enum bpf_attach_type {
 	BPF_CGROUP_INET_INGRESS,
 	BPF_CGROUP_INET_EGRESS,
 	BPF_CGROUP_INET_SOCK_CREATE,
+	BPF_CGROUP_INET4_BIND = 8,
+	BPF_CGROUP_INET6_BIND = 9,
+	BPF_CGROUP_INET4_CONNECT = 10,
+	BPF_CGROUP_INET6_CONNECT = 11,
+	BPF_CGROUP_UDP4_SENDMSG = 14,
+	BPF_CGROUP_UDP6_SENDMSG = 15,
+	BPF_CGROUP_UDP4_RECVMSG = 19,
+	BPF_CGROUP_UDP6_RECVMSG = 20,
+	BPF_CGROUP_GETSOCKOPT = 21,
+	BPF_CGROUP_SETSOCKOPT = 22,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -161,6 +176,7 @@ enum bpf_attach_type {
  */
 #define BPF_F_ALLOW_OVERRIDE	(1U << 0)
 #define BPF_F_ALLOW_MULTI	(1U << 1)
+#define BPF_F_QUERY_EFFECTIVE (1U << 0)
 
 #define BPF_PSEUDO_MAP_FD	1
 
@@ -170,6 +186,7 @@ enum bpf_attach_type {
 #define BPF_EXIST	2 /* update existing element */
 
 #define BPF_F_NO_PREALLOC	(1U << 0)
+#define BPF_F_RDONLY_PROG	(1U << 7)
 
 /* Flags for accessing BPF object */
 #define BPF_F_RDONLY		(1U << 3)
@@ -242,6 +259,15 @@ union bpf_attr {
 		__u32		info_len;
 		__aligned_u64	info;
 	} info;
+
+	struct {
+		__u32 target_fd;
+		__u32 attach_type;
+		__u32 query_flags;
+		__u32 attach_flags;
+		__aligned_u64 prog_ids;
+		__u32 prog_cnt;
+	} query;
 
 	struct { /* used by BPF_BTF_LOAD */
 		__aligned_u64	btf;
@@ -596,6 +622,9 @@ enum bpf_func_id {
 	 */
 	BPF_FUNC_get_socket_uid,
 
+	BPF_FUNC_skb_adjust_room = 50,
+	BPF_FUNC_skb_load_bytes_relative = 68,
+	BPF_FUNC_sk_fullsock = 95,
 	__BPF_FUNC_MAX_ID,
 };
 
@@ -657,7 +686,30 @@ struct __sk_buff {
 	__u32 tc_classid;
 	__u32 data;
 	__u32 data_end;
+	__u32 napi_id;
+	__u32 family;
+	__u32 remote_ip4;
+	__u32 local_ip4;
+	__u32 remote_ip6[4];
+	__u32 local_ip6[4];
+	__u32 remote_port;
+	__u32 local_port;
+	__u32 data_meta;
+	__aligned_u64 flow_keys;
+	__u64 tstamp;
+	__u32 wire_len;
+	__u32 gso_segs;
+	__aligned_u64 sk;
+	__u32 gso_size;
 };
+
+struct bpf_lpm_trie_key {
+	__u32 prefixlen;
+	__u8 data[0];
+};
+
+enum bpf_adj_room_mode { BPF_ADJ_ROOM_NET = 0 };
+enum bpf_hdr_start_off { BPF_HDR_START_MAC = 0, BPF_HDR_START_NET = 1 };
 
 struct bpf_tunnel_key {
 	__u32 tunnel_id;
@@ -673,6 +725,19 @@ struct bpf_tunnel_key {
 
 struct bpf_sock {
 	__u32 bound_dev_if;
+	__u32 family;
+	__u32 type;
+	__u32 protocol;
+	__u32 mark;
+	__u32 priority;
+	/* IP address also allows 1 and 2 bytes access */
+	__u32 src_ip4;
+	__u32 src_ip6[4];
+	__u32 src_port;		/* host byte order */
+	__u32 dst_port;		/* network byte order */
+	__u32 dst_ip4;
+	__u32 dst_ip6[4];
+	__u32 state;
 };
 
 /* User return codes for XDP prog type.
@@ -720,6 +785,30 @@ struct bpf_map_info {
 	__u32 btf_key_type_id;
 	__u32 btf_value_type_id;
 } __attribute__((aligned(8)));
+
+
+struct bpf_sock_addr {
+	__u32 user_family;
+	__u32 user_ip4;
+	__u32 user_ip6[4];
+	__u32 user_port;
+	__u32 family;
+	__u32 type;
+	__u32 protocol;
+	__u32 msg_src_ip4;
+	__u32 msg_src_ip6[4];
+	__aligned_u64 sk;
+};
+
+struct bpf_sockopt {
+	__aligned_u64 sk;
+	__aligned_u64 optval;
+	__aligned_u64 optval_end;
+	__s32 level;
+	__s32 optname;
+	__s32 optlen;
+	__s32 retval;
+};
 
 struct bpf_btf_info {
 	__aligned_u64 btf;

@@ -8,6 +8,23 @@
 struct sock;
 struct cgroup;
 struct sk_buff;
+struct sockaddr;
+
+/* Scalar shadow avoids changing the legacy nested-context converter ABI. */
+struct bpf_sock_addr_kern {
+	struct bpf_sock_addr user;
+	struct sock *sk;
+};
+
+struct bpf_sockopt_kern {
+	struct sock *sk;
+	u8 *optval;
+	u8 *optval_end;
+	s32 level;
+	s32 optname;
+	s32 optlen;
+	s32 retval;
+};
 
 #ifdef CONFIG_CGROUP_BPF
 
@@ -58,7 +75,29 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 int __cgroup_bpf_run_filter_sk(struct sock *sk,
 			    enum bpf_attach_type type);
 
+int __cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
+		       union bpf_attr __user *uattr);
+int cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
+		    union bpf_attr __user *uattr);
+int __cgroup_bpf_run_sock_addr(struct sock *sk, struct sockaddr *addr,
+			     int addrlen, enum bpf_attach_type type);
+int cgroup_bpf_run_sock_addr(struct sock *sk, struct sockaddr *addr,
+			    int addrlen, enum bpf_attach_type type);
+int __cgroup_bpf_setsockopt(struct sock *sk, int *level, int *optname,
+	char __user *optval, int *optlen, char **kernel_optval);
+int __cgroup_bpf_getsockopt(struct sock *sk, int level, int optname,
+	char __user *optval, int __user *optlen, int max_optlen, int retval);
+
 /* Wrappers for __cgroup_bpf_run_filter() guarded by cgroup_bpf_enabled. */
+#define BPF_CGROUP_SOCK_ADDR(sk, addr, len, type) \
+	(cgroup_bpf_enabled ? __cgroup_bpf_run_sock_addr(sk, addr, len, type) : 0)
+#define BPF_CGROUP_SOCK_ADDR_LOCK(sk, addr, len, type) \
+	(cgroup_bpf_enabled ? cgroup_bpf_run_sock_addr(sk, addr, len, type) : 0)
+#define BPF_CGROUP_SETSOCKOPT(sk, level, name, val, len, kval) \
+	(cgroup_bpf_enabled ? __cgroup_bpf_setsockopt(sk, level, name, val, len, kval) : 0)
+#define BPF_CGROUP_GETSOCKOPT(sk, level, name, val, len, maxlen, ret) \
+	(cgroup_bpf_enabled ? __cgroup_bpf_getsockopt(sk, level, name, val, len, maxlen, ret) : (ret))
+
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb)			\
 ({									\
 	int __ret = 0;							\
@@ -93,6 +132,10 @@ int __cgroup_bpf_run_filter_sk(struct sock *sk,
 #else
 
 struct cgroup_bpf {};
+#define BPF_CGROUP_SOCK_ADDR(sk, addr, len, type) (0)
+#define BPF_CGROUP_SOCK_ADDR_LOCK(sk, addr, len, type) (0)
+#define BPF_CGROUP_SETSOCKOPT(sk, level, name, val, len, kval) (0)
+#define BPF_CGROUP_GETSOCKOPT(sk, level, name, val, len, maxlen, ret) (ret)
 static inline void cgroup_bpf_put(struct cgroup *cgrp) {}
 static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 
