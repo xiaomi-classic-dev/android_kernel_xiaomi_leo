@@ -32,6 +32,7 @@ struct unix_skb_parms {
 	kuid_t			uid;
 	kgid_t			gid;
 	struct scm_fp_list	*fp;		/* Passed files		*/
+	u32			consumed;	/* Stream bytes read	*/
 #ifdef CONFIG_SECURITY_NETWORK
 	u32			secid;		/* Security ID		*/
 #endif

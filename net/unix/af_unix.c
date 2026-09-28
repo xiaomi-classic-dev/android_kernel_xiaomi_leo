@@ -115,6 +115,7 @@
 #include <net/checksum.h>
 #include <linux/security.h>
 #include <linux/freezer.h>
+#include <linux/splice.h>
 
 struct hlist_head unix_socket_table[2 * UNIX_HASH_SIZE];
 EXPORT_SYMBOL_GPL(unix_socket_table);
@@ -542,6 +543,7 @@ static void unix_release_sock(struct sock *sk, int embrion)
 		if (state == TCP_LISTEN)
 			unix_release_sock(skb->sk, 1);
 		/* passed fds are erased in the kfree_skb hook	      */
+		UNIXCB(skb).consumed = skb->len;
 		kfree_skb(skb);
 	}
 
@@ -632,6 +634,9 @@ static int unix_stream_sendmsg(struct kiocb *, struct socket *,
 			       struct msghdr *, size_t);
 static int unix_stream_recvmsg(struct kiocb *, struct socket *,
 			       struct msghdr *, size_t, int);
+static ssize_t unix_stream_splice_read(struct socket *, loff_t *,
+				       struct pipe_inode_info *, size_t,
+				       unsigned int);
 static int unix_dgram_sendmsg(struct kiocb *, struct socket *,
 			      struct msghdr *, size_t);
 static int unix_dgram_recvmsg(struct kiocb *, struct socket *,
@@ -676,6 +681,7 @@ static const struct proto_ops unix_stream_ops = {
 	.recvmsg =	unix_stream_recvmsg,
 	.mmap =		sock_no_mmap,
 	.sendpage =	sock_no_sendpage,
+	.splice_read =	unix_stream_splice_read,
 	.set_peek_off =	unix_set_peek_off,
 };
 
@@ -1549,6 +1555,7 @@ static int unix_scm_to_skb(struct scm_cookie *scm, struct sk_buff *skb, bool sen
 	UNIXCB(skb).uid = scm->creds.uid;
 	UNIXCB(skb).gid = scm->creds.gid;
 	UNIXCB(skb).fp = NULL;
+	UNIXCB(skb).consumed = 0;
 	if (scm->fp && send_fds)
 		err = unix_attach_fds(scm, skb);
 
@@ -2080,15 +2087,33 @@ static long unix_stream_data_wait(struct sock *sk, long timeo,
 	return timeo;
 }
 
-static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
-			       struct msghdr *msg, size_t size,
-			       int flags)
+static unsigned int unix_skb_len(const struct sk_buff *skb)
 {
-	struct sock_iocb *siocb = kiocb_to_siocb(iocb);
+	return skb->len - UNIXCB(skb).consumed;
+}
+
+struct unix_stream_read_state {
+	int (*recv_actor)(struct sk_buff *, int, int,
+			  struct unix_stream_read_state *);
+	struct socket *socket;
+	struct msghdr *msg;
+	struct scm_cookie *scm;
+	struct pipe_inode_info *pipe;
+	size_t size;
+	int flags;
+	unsigned int splice_flags;
+};
+
+static int unix_stream_read_generic(struct unix_stream_read_state *state)
+{
+	struct socket *sock = state->socket;
+	struct msghdr *msg = state->msg;
+	size_t size = state->size;
+	int flags = state->flags;
 	struct scm_cookie tmp_scm;
 	struct sock *sk = sock->sk;
 	struct unix_sock *u = unix_sk(sk);
-	struct sockaddr_un *sunaddr = msg->msg_name;
+	struct sockaddr_un *sunaddr = msg ? msg->msg_name : NULL;
 	int copied = 0;
 	int noblock = flags & MSG_DONTWAIT;
 	int check_creds = 0;
@@ -2112,8 +2137,8 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 	 * while sleeps in memcpy_tomsg
 	 */
 
-	if (!siocb->scm) {
-		siocb->scm = &tmp_scm;
+	if (!state->scm) {
+		state->scm = &tmp_scm;
 		memset(&tmp_scm, 0, sizeof(tmp_scm));
 	}
 
@@ -2121,6 +2146,7 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 	do {
 		int chunk;
+		bool drop_skb;
 		struct sk_buff *skb, *last;
 
 		unix_state_lock(sk);
@@ -2166,8 +2192,8 @@ again:
 		}
 
 		skip = sk_peek_offset(sk, flags);
-		while (skip >= skb->len) {
-			skip -= skb->len;
+		while (skip >= unix_skb_len(skb)) {
+			skip -= unix_skb_len(skb);
 			last = skb;
 			skb = skb_peek_next(skb, &sk->sk_receive_queue);
 			if (!skb)
@@ -2178,13 +2204,13 @@ again:
 
 		if (check_creds) {
 			/* Never glue messages from different writers */
-			if ((UNIXCB(skb).pid  != siocb->scm->pid) ||
-			    !uid_eq(UNIXCB(skb).uid, siocb->scm->creds.uid) ||
-			    !gid_eq(UNIXCB(skb).gid, siocb->scm->creds.gid))
+			if ((UNIXCB(skb).pid  != state->scm->pid) ||
+			    !uid_eq(UNIXCB(skb).uid, state->scm->creds.uid) ||
+			    !gid_eq(UNIXCB(skb).gid, state->scm->creds.gid))
 				break;
 		} else if (test_bit(SOCK_PASSCRED, &sock->flags)) {
 			/* Copy credentials */
-			scm_set_cred(siocb->scm, UNIXCB(skb).pid, UNIXCB(skb).uid, UNIXCB(skb).gid);
+			scm_set_cred(state->scm, UNIXCB(skb).pid, UNIXCB(skb).uid, UNIXCB(skb).gid);
 			check_creds = 1;
 		}
 
@@ -2194,37 +2220,51 @@ again:
 			sunaddr = NULL;
 		}
 
-		chunk = min_t(unsigned int, skb->len - skip, size);
-		if (memcpy_toiovec(msg->msg_iov, skb->data + skip, chunk)) {
-			if (copied == 0)
-				copied = -EFAULT;
+		chunk = min_t(unsigned int, unix_skb_len(skb) - skip, size);
+		/* The splice actor drops readlock while acquiring the pipe lock. */
+		skb_get(skb);
+		chunk = state->recv_actor(skb, skip, chunk, state);
+		drop_skb = !unix_skb_len(skb);
+		consume_skb(skb);
+		if (chunk <= 0) {
+			err = chunk;
 			break;
 		}
 		copied += chunk;
 		size -= chunk;
 
+		/* Return a short read when the pipe fills after making progress. */
+		if (state->pipe)
+			state->splice_flags |= SPLICE_F_NONBLOCK;
+
+		if (drop_skb) {
+			/* A concurrent reader or close removed it from the queue. */
+			err = 0;
+			break;
+		}
+
 		/* Mark read part of skb as used */
 		if (!(flags & MSG_PEEK)) {
-			skb_pull(skb, chunk);
+			UNIXCB(skb).consumed += chunk;
 
 			sk_peek_offset_bwd(sk, chunk);
 
 			if (UNIXCB(skb).fp)
-				unix_detach_fds(siocb->scm, skb);
+				unix_detach_fds(state->scm, skb);
 
-			if (skb->len)
+			if (unix_skb_len(skb))
 				break;
 
 			skb_unlink(skb, &sk->sk_receive_queue);
 			consume_skb(skb);
 
-			if (siocb->scm->fp)
+			if (state->scm->fp)
 				break;
 		} else {
 			/* It is questionable, see note in unix_dgram_recvmsg.
 			 */
 			if (UNIXCB(skb).fp)
-				siocb->scm->fp = scm_fp_dup(UNIXCB(skb).fp);
+				state->scm->fp = scm_fp_dup(UNIXCB(skb).fp);
 
 			if (skip) {
 				sk_peek_offset_fwd(sk, chunk);
@@ -2245,9 +2285,83 @@ again:
 	} while (size);
 
 	mutex_unlock(&u->readlock);
-	scm_recv(sock, msg, siocb->scm, flags);
+	if (msg)
+		scm_recv(sock, msg, state->scm, flags);
+	else
+		scm_destroy(state->scm);
 out:
 	return copied ? : err;
+}
+
+static int unix_stream_read_actor(struct sk_buff *skb, int skip, int chunk,
+				  struct unix_stream_read_state *state)
+{
+	int ret = skb_copy_datagram_iovec(skb, UNIXCB(skb).consumed + skip,
+					state->msg->msg_iov, chunk);
+
+	return ret ?: chunk;
+}
+
+static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
+			       struct msghdr *msg, size_t size, int flags)
+{
+	struct sock_iocb *siocb = kiocb_to_siocb(iocb);
+	struct scm_cookie tmp_scm;
+	struct unix_stream_read_state state = {
+		.recv_actor = unix_stream_read_actor,
+		.socket = sock,
+		.msg = msg,
+		.size = size,
+		.flags = flags,
+	};
+
+	if (!siocb->scm) {
+		siocb->scm = &tmp_scm;
+		memset(&tmp_scm, 0, sizeof(tmp_scm));
+	}
+	state.scm = siocb->scm;
+	return unix_stream_read_generic(&state);
+}
+
+static ssize_t skb_unix_socket_splice(struct sock *sk,
+				      struct pipe_inode_info *pipe,
+				      struct splice_pipe_desc *spd)
+{
+	struct unix_sock *u = unix_sk(sk);
+	int ret;
+
+	mutex_unlock(&u->readlock);
+	ret = splice_to_pipe(pipe, spd);
+	mutex_lock(&u->readlock);
+	return ret;
+}
+
+static int unix_stream_splice_actor(struct sk_buff *skb, int skip, int chunk,
+				    struct unix_stream_read_state *state)
+{
+	return skb_splice_bits(skb, state->socket->sk,
+			       UNIXCB(skb).consumed + skip,
+			       state->pipe, chunk, state->splice_flags,
+			       skb_unix_socket_splice);
+}
+
+static ssize_t unix_stream_splice_read(struct socket *sock, loff_t *ppos,
+				       struct pipe_inode_info *pipe,
+				       size_t size, unsigned int flags)
+{
+	struct unix_stream_read_state state = {
+		.recv_actor = unix_stream_splice_actor,
+		.socket = sock,
+		.pipe = pipe,
+		.size = size,
+		.splice_flags = flags,
+	};
+
+	if (unlikely(*ppos))
+		return -ESPIPE;
+	if (sock->file->f_flags & O_NONBLOCK || flags & SPLICE_F_NONBLOCK)
+		state.flags = MSG_DONTWAIT;
+	return unix_stream_read_generic(&state);
 }
 
 static int unix_shutdown(struct socket *sock, int mode)
@@ -2308,7 +2422,7 @@ long unix_inq_len(struct sock *sk)
 	if (sk->sk_type == SOCK_STREAM ||
 	    sk->sk_type == SOCK_SEQPACKET) {
 		skb_queue_walk(&sk->sk_receive_queue, skb)
-			amount += skb->len;
+			amount += unix_skb_len(skb);
 	} else {
 		skb = skb_peek(&sk->sk_receive_queue);
 		if (skb)

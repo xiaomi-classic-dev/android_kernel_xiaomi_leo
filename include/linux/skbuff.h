@@ -2592,11 +2592,16 @@ extern int	       skb_store_bits(struct sk_buff *skb, int offset,
 extern __wsum	       skb_copy_and_csum_bits(const struct sk_buff *skb,
 					      int offset, u8 *to, int len,
 					      __wsum csum);
-extern int             skb_splice_bits(struct sk_buff *skb,
-						unsigned int offset,
-						struct pipe_inode_info *pipe,
-						unsigned int len,
-						unsigned int flags);
+struct splice_pipe_desc;
+extern ssize_t skb_socket_splice(struct sock *sk,
+				 struct pipe_inode_info *pipe,
+				 struct splice_pipe_desc *spd);
+extern int skb_splice_bits(struct sk_buff *skb, struct sock *sk,
+			  unsigned int offset, struct pipe_inode_info *pipe,
+			  unsigned int len, unsigned int flags,
+			  ssize_t (*splice_cb)(struct sock *,
+					       struct pipe_inode_info *,
+					       struct splice_pipe_desc *));
 extern void	       skb_copy_and_csum_dev(const struct sk_buff *skb, u8 *to);
 extern void	       skb_split(struct sk_buff *skb,
 				 struct sk_buff *skb1, const u32 len);
