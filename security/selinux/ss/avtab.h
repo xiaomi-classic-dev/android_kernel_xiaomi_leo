@@ -57,6 +57,8 @@ struct avtab_extended_perms {
 /* These are not flags. All 256 values may be used */
 #define AVTAB_XPERMS_IOCTLFUNCTION	0x01
 #define AVTAB_XPERMS_IOCTLDRIVER	0x02
+/* Recognize the modern wire format without enforcing netlink xperms. */
+#define AVTAB_XPERMS_NLMSG		0x03
 	/* extension of the avtab_key specified */
 	u8 specified; /* ioctl, netfilter, ... */
 	/*
