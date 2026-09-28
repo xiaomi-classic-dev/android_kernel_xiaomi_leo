@@ -77,6 +77,8 @@ enum bpf_cmd {
 	BPF_PROG_DETACH,
 };
 
+#define BPF_TAG_SIZE 8
+
 enum bpf_map_type {
 	BPF_MAP_TYPE_UNSPEC,
 	BPF_MAP_TYPE_HASH,

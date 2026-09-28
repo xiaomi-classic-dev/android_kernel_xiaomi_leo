@@ -711,8 +711,10 @@ static void __bpf_prog_put_rcu(struct rcu_head *rcu)
 
 void bpf_prog_put(struct bpf_prog *prog)
 {
-	if (atomic_dec_and_test(&prog->aux->refcnt))
+	if (atomic_dec_and_test(&prog->aux->refcnt)) {
+		bpf_prog_kallsyms_del(prog);
 		call_rcu(&prog->aux->rcu, __bpf_prog_put_rcu);
+	}
 }
 EXPORT_SYMBOL_GPL(bpf_prog_put);
 
@@ -856,6 +858,9 @@ static int bpf_prog_load(union bpf_attr *attr)
 
 	prog->orig_prog = NULL;
 	prog->jited = 0;
+	err = bpf_prog_calc_tag(prog);
+	if (err)
+		goto free_prog;
 
 	atomic_set(&prog->aux->refcnt, 1);
 	prog->gpl_compatible = is_gpl ? 1 : 0;
@@ -880,6 +885,7 @@ static int bpf_prog_load(union bpf_attr *attr)
 		/* failed to allocate fd */
 		goto free_used_maps;
 
+	bpf_prog_kallsyms_add(prog);
 	return err;
 
 free_used_maps:

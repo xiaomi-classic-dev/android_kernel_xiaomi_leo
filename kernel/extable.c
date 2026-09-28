@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/init.h>
+#include <linux/filter.h>
 
 #include <asm/sections.h>
 #include <asm/uaccess.h>
@@ -101,6 +102,8 @@ int __kernel_text_address(unsigned long addr)
 	if (core_kernel_text(addr))
 		return 1;
 	if (is_module_text_address(addr))
+		return 1;
+	if (is_bpf_text_address(addr))
 		return 1;
 	/*
 	 * There might be init symbols in saved stacktraces.

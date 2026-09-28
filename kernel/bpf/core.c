@@ -28,6 +28,9 @@
 #include <linux/moduleloader.h>
 #include <linux/bpf.h>
 #include <linux/frame.h>
+#include <linux/cryptohash.h>
+#include <linux/kallsyms.h>
+#include <linux/rculist.h>
 
 #include <asm/unaligned.h>
 
@@ -96,10 +99,77 @@ struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 	fp->pages = size / PAGE_SIZE;
 	fp->aux = aux;
 	fp->aux->prog = fp;
+	INIT_LIST_HEAD(&aux->ksym_lnode);
 
 	return fp;
 }
 EXPORT_SYMBOL_GPL(bpf_prog_alloc);
+
+int bpf_prog_calc_tag(struct bpf_prog *fp)
+{
+	const u32 bits_offset = SHA_MESSAGE_BYTES - sizeof(__be64);
+	u32 insn_size = fp->len * sizeof(struct bpf_insn);
+	u32 raw_size = round_up(insn_size + 1 + sizeof(__be64),
+				SHA_MESSAGE_BYTES);
+	u32 digest[SHA_DIGEST_WORDS], ws[SHA_WORKSPACE_WORDS];
+	u32 i, bsize, psize, blocks;
+	struct bpf_insn *dst;
+	bool was_ld_map;
+	u8 *raw, *todo;
+	__be32 *result;
+	__be64 *bits;
+
+	raw = vmalloc(raw_size);
+	if (!raw)
+		return -ENOMEM;
+
+	sha_init(digest);
+	memset(ws, 0, sizeof(ws));
+
+	/* Map file descriptors must not affect the program's stable tag. */
+	dst = (void *)raw;
+	for (i = 0, was_ld_map = false; i < fp->len; i++) {
+		dst[i] = fp->insnsi[i];
+		if (!was_ld_map &&
+		    dst[i].code == (BPF_LD | BPF_IMM | BPF_DW) &&
+		    dst[i].src_reg == BPF_PSEUDO_MAP_FD) {
+			was_ld_map = true;
+			dst[i].imm = 0;
+		} else if (was_ld_map && !dst[i].code && !dst[i].dst_reg &&
+			   !dst[i].src_reg && !dst[i].off) {
+			was_ld_map = false;
+			dst[i].imm = 0;
+		} else {
+			was_ld_map = false;
+		}
+	}
+
+	psize = insn_size;
+	memset(raw + psize, 0, raw_size - psize);
+	raw[psize++] = 0x80;
+	bsize = round_up(psize, SHA_MESSAGE_BYTES);
+	blocks = bsize / SHA_MESSAGE_BYTES;
+	todo = raw;
+	if (bsize - psize >= sizeof(__be64)) {
+		bits = (__be64 *)(todo + bsize - sizeof(__be64));
+	} else {
+		bits = (__be64 *)(todo + bsize + bits_offset);
+		blocks++;
+	}
+	*bits = cpu_to_be64((psize - 1) << 3);
+
+	while (blocks--) {
+		sha_transform(digest, todo, ws);
+		todo += SHA_MESSAGE_BYTES;
+	}
+
+	result = (__force __be32 *)digest;
+	for (i = 0; i < SHA_DIGEST_WORDS; i++)
+		result[i] = cpu_to_be32(digest[i]);
+	memcpy(fp->tag, result, sizeof(fp->tag));
+	vfree(raw);
+	return 0;
+}
 
 struct bpf_prog *bpf_prog_realloc(struct bpf_prog *fp_old, unsigned int size,
 				  gfp_t gfp_extra_flags)
@@ -266,10 +336,117 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 /* All BPF JIT sysctl knobs here. */
 int bpf_jit_enable   __read_mostly = IS_BUILTIN(CONFIG_BPF_JIT_ALWAYS_ON);
 int bpf_jit_harden   __read_mostly;
+int bpf_jit_kallsyms __read_mostly;
 long bpf_jit_limit   __read_mostly;
 long bpf_jit_limit_max __read_mostly;
 
 static atomic_long_t bpf_jit_current;
+
+static DEFINE_SPINLOCK(bpf_kallsyms_lock);
+static LIST_HEAD(bpf_kallsyms);
+
+static void bpf_get_prog_name(const struct bpf_prog *prog, char *sym)
+{
+	BUILD_BUG_ON(sizeof("bpf_prog_") + BPF_TAG_SIZE * 2 > KSYM_NAME_LEN);
+	sym += sprintf(sym, "bpf_prog_");
+	sym = bin2hex(sym, prog->tag, sizeof(prog->tag));
+	*sym = '\0';
+}
+
+void bpf_prog_kallsyms_add(struct bpf_prog *fp)
+{
+	unsigned long flags;
+
+	if (!fp->jited || bpf_prog_was_classic(fp) ||
+	    !capable(CAP_SYS_ADMIN))
+		return;
+
+	spin_lock_irqsave(&bpf_kallsyms_lock, flags);
+	if (!WARN_ON_ONCE(!list_empty(&fp->aux->ksym_lnode)))
+		list_add_tail_rcu(&fp->aux->ksym_lnode, &bpf_kallsyms);
+	spin_unlock_irqrestore(&bpf_kallsyms_lock, flags);
+}
+
+void bpf_prog_kallsyms_del(struct bpf_prog *fp)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&bpf_kallsyms_lock, flags);
+	if (!list_empty(&fp->aux->ksym_lnode))
+		list_del_rcu(&fp->aux->ksym_lnode);
+	spin_unlock_irqrestore(&bpf_kallsyms_lock, flags);
+}
+
+/* Called under RCU, including by interrupt-time stack trace lookups. */
+static struct bpf_prog *bpf_prog_kallsyms_find(unsigned long addr)
+{
+	struct bpf_prog_aux *aux;
+
+	if (!bpf_jit_kallsyms_enabled())
+		return NULL;
+
+	list_for_each_entry_rcu(aux, &bpf_kallsyms, ksym_lnode) {
+		unsigned long start = (unsigned long)aux->prog->bpf_func;
+
+		if (addr >= start && addr - start < aux->prog->jited_len)
+			return aux->prog;
+	}
+	return NULL;
+}
+
+const char *__bpf_address_lookup(unsigned long addr, unsigned long *size,
+				 unsigned long *off, char *sym)
+{
+	struct bpf_prog *prog;
+	const char *ret = NULL;
+
+	rcu_read_lock();
+	prog = bpf_prog_kallsyms_find(addr);
+	if (prog) {
+		bpf_get_prog_name(prog, sym);
+		if (size)
+			*size = prog->jited_len;
+		if (off)
+			*off = addr - (unsigned long)prog->bpf_func;
+		ret = sym;
+	}
+	rcu_read_unlock();
+	return ret;
+}
+
+bool is_bpf_text_address(unsigned long addr)
+{
+	bool found;
+
+	rcu_read_lock();
+	found = bpf_prog_kallsyms_find(addr) != NULL;
+	rcu_read_unlock();
+	return found;
+}
+
+int bpf_get_kallsym(unsigned int symnum, unsigned long *value, char *type,
+		    char *sym)
+{
+	struct bpf_prog_aux *aux;
+	unsigned int i = 0;
+	int ret = -ERANGE;
+
+	if (!bpf_jit_kallsyms_enabled())
+		return ret;
+
+	rcu_read_lock();
+	list_for_each_entry_rcu(aux, &bpf_kallsyms, ksym_lnode) {
+		if (i++ != symnum)
+			continue;
+		bpf_get_prog_name(aux->prog, sym);
+		*value = (unsigned long)aux->prog->bpf_func;
+		*type = 't';
+		ret = 0;
+		break;
+	}
+	rcu_read_unlock();
+	return ret;
+}
 
 /* Can be overridden by an arch's JIT compiler if it has a custom,
  * dedicated BPF backend memory area, or if neither of the two
