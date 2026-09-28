@@ -44,6 +44,7 @@ struct bpf_map {
 	u32 map_flags;
 	u32 pages;
 	u32 id;
+	char name[BPF_OBJ_NAME_LEN];
 	bool unpriv_array;
 	struct user_struct *user;
 	const struct bpf_map_ops *ops;
@@ -183,6 +184,7 @@ struct bpf_prog_aux {
 	u32 max_ctx_offset;
 	u32 id;
 	struct list_head ksym_lnode;
+	char name[BPF_OBJ_NAME_LEN];
 	const struct bpf_verifier_ops *ops;
 	struct bpf_map **used_maps;
 	struct bpf_prog *prog;

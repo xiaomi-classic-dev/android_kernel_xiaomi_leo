@@ -82,6 +82,7 @@ enum bpf_cmd {
 };
 
 #define BPF_TAG_SIZE 8
+#define BPF_OBJ_NAME_LEN 16
 
 enum bpf_map_type {
 	BPF_MAP_TYPE_UNSPEC,
@@ -179,6 +180,9 @@ union bpf_attr {
 		__u32	value_size;	/* size of value in bytes */
 		__u32	max_entries;	/* max number of entries in a map */
 		__u32	map_flags;	/* prealloc or not */
+		__u32	inner_map_fd;	/* reserved: map-in-map is unsupported */
+		__u32	numa_node;	/* reserved: NUMA maps are unsupported */
+		char	map_name[BPF_OBJ_NAME_LEN];
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -200,6 +204,10 @@ union bpf_attr {
 		__u32		log_size;	/* size of user buffer */
 		__aligned_u64	log_buf;	/* user supplied buffer */
 		__u32		kern_version;	/* checked when prog_type=kprobe */
+		__u32		prog_flags;	/* reserved: load flags are unsupported */
+		char		prog_name[BPF_OBJ_NAME_LEN];
+		__u32		prog_ifindex;	/* reserved: offload is unsupported */
+		__u32		expected_attach_type;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -686,6 +694,7 @@ struct bpf_map_info {
 	__u32 value_size;
 	__u32 max_entries;
 	__u32 map_flags;
+	char name[BPF_OBJ_NAME_LEN];
 } __attribute__((aligned(8)));
 
 #endif /* _UAPI__LINUX_BPF_H__ */

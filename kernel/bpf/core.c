@@ -347,10 +347,13 @@ static LIST_HEAD(bpf_kallsyms);
 
 static void bpf_get_prog_name(const struct bpf_prog *prog, char *sym)
 {
-	BUILD_BUG_ON(sizeof("bpf_prog_") + BPF_TAG_SIZE * 2 > KSYM_NAME_LEN);
+	BUILD_BUG_ON(sizeof("bpf_prog_") + BPF_TAG_SIZE * 2 +
+		     BPF_OBJ_NAME_LEN > KSYM_NAME_LEN);
 	sym += sprintf(sym, "bpf_prog_");
 	sym = bin2hex(sym, prog->tag, sizeof(prog->tag));
 	*sym = '\0';
+	if (prog->aux->name[0])
+		sprintf(sym, "_%s", prog->aux->name);
 }
 
 void bpf_prog_kallsyms_add(struct bpf_prog *fp)

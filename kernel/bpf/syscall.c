@@ -20,6 +20,7 @@
 #include <linux/filter.h>
 #include <linux/version.h>
 #include <linux/idr.h>
+#include <linux/ctype.h>
 
 #define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY)
 
@@ -275,7 +276,20 @@ int bpf_get_file_flag(int flags)
 		   offsetof(union bpf_attr, CMD##_LAST_FIELD) - \
 		   sizeof(attr->CMD##_LAST_FIELD)) != NULL
 
-#define BPF_MAP_CREATE_LAST_FIELD map_flags
+static int bpf_obj_name_cpy(char *dst, const char *src)
+{
+	const char *end = src + BPF_OBJ_NAME_LEN;
+
+	memset(dst, 0, BPF_OBJ_NAME_LEN);
+	while (src < end && *src) {
+		if (!isalnum(*src) && *src != '_')
+			return -EINVAL;
+		*dst++ = *src++;
+	}
+	return src == end ? -EINVAL : 0;
+}
+
+#define BPF_MAP_CREATE_LAST_FIELD map_name
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -284,7 +298,7 @@ static int map_create(union bpf_attr *attr)
 	int err;
 
 	err = CHECK_ATTR(BPF_MAP_CREATE);
-	if (err)
+	if (err || attr->inner_map_fd || attr->numa_node)
 		return -EINVAL;
 
 	f_flags = bpf_get_file_flag(attr->map_flags);
@@ -302,6 +316,10 @@ static int map_create(union bpf_attr *attr)
 	err = security_bpf_map_alloc(map);
 	if (err)
 		goto free_map_nouncharge;
+
+	err = bpf_obj_name_cpy(map->name, attr->map_name);
+	if (err)
+		goto free_map_sec;
 
 	err = bpf_map_charge_memlock(map);
 	if (err)
@@ -842,7 +860,7 @@ struct bpf_prog *bpf_prog_get_type(u32 ufd, enum bpf_prog_type type)
 EXPORT_SYMBOL_GPL(bpf_prog_get_type);
 
 /* last field in 'union bpf_attr' used by this command */
-#define	BPF_PROG_LOAD_LAST_FIELD kern_version
+#define	BPF_PROG_LOAD_LAST_FIELD expected_attach_type
 
 static int bpf_prog_load(union bpf_attr *attr)
 {
@@ -852,7 +870,15 @@ static int bpf_prog_load(union bpf_attr *attr)
 	char license[128];
 	bool is_gpl;
 
-	if (CHECK_ATTR(BPF_PROG_LOAD))
+	if (CHECK_ATTR(BPF_PROG_LOAD) || attr->prog_flags || attr->prog_ifindex)
+		return -EINVAL;
+
+	/* Existing cgroup hooks share a verifier context within each type. */
+	if (attr->expected_attach_type &&
+	    !(type == BPF_PROG_TYPE_CGROUP_SKB &&
+	      attr->expected_attach_type == BPF_CGROUP_INET_EGRESS) &&
+	    !(type == BPF_PROG_TYPE_CGROUP_SOCK &&
+	      attr->expected_attach_type == BPF_CGROUP_INET_SOCK_CREATE))
 		return -EINVAL;
 
 	/* copy eBPF program license from user space */
@@ -888,6 +914,10 @@ static int bpf_prog_load(union bpf_attr *attr)
 	err = bpf_prog_charge_memlock(prog);
 	if (err)
 		goto free_prog_sec;
+
+	err = bpf_obj_name_cpy(prog->aux->name, attr->prog_name);
+	if (err)
+		goto free_prog;
 
 	prog->len = attr->insn_cnt;
 
@@ -1192,6 +1222,7 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 	info.value_size = map->value_size;
 	info.max_entries = map->max_entries;
 	info.map_flags = map->map_flags;
+	memcpy(info.name, map->name, sizeof(info.name));
 
 	if (copy_to_user(uinfo, &info, info_len) ||
 	    put_user(info_len, &uattr->info.info_len))
