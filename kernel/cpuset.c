@@ -276,6 +276,16 @@ static DECLARE_WORK(cpuset_hotplug_work, cpuset_hotplug_workfn);
 static DECLARE_WAIT_QUEUE_HEAD(cpuset_attach_wq);
 
 /*
+ * The existing cpus_requested mask survives CPU hotplug.  In v2 mode,
+ * also keep tasks in empty cpusets, using their ancestor's online mask.
+ */
+static inline bool is_in_v2_mode(void)
+{
+	return cgroup_subsys_on_dfl(cpuset_cgrp_subsys) ||
+		(cpuset_cgrp_subsys.root->flags & CGRP_ROOT_CPUSET_V2_MODE);
+}
+
+/*
  * This is ugly, but preserves the userspace API for existing cpuset
  * users. If someone tries to mount the "cpuset" filesystem, we
  * silently switch it to mount "cgroup" instead
@@ -908,6 +918,7 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 	 */
 	if (!*buf) {
 		cpumask_clear(trialcs->cpus_allowed);
+		cpumask_clear(trialcs->cpus_requested);
 	} else {
 		retval = cpulist_parse(buf, trialcs->cpus_requested);
 		if (retval < 0)
@@ -1392,9 +1403,9 @@ static int cpuset_can_attach(struct cgroup_taskset *tset)
 
 	mutex_lock(&cpuset_mutex);
 
-	/* allow moving tasks into an empty cpuset if on default hierarchy */
+	/* In v2 mode, an empty cpuset uses its ancestor's online masks. */
 	ret = -ENOSPC;
-	if (!cgroup_on_dfl(css->cgroup) &&
+	if (!is_in_v2_mode() &&
 	    (cpumask_empty(cs->cpus_allowed) || nodes_empty(cs->mems_allowed)))
 		goto out_unlock;
 
@@ -2064,7 +2075,7 @@ static void cpuset_hotplug_update_tasks(struct cpuset *cs)
 	static cpumask_t diff, new_allowed;
 	static nodemask_t off_mems;
 	bool is_empty;
-	bool on_dfl = cgroup_on_dfl(cs->css.cgroup);
+	bool on_dfl = is_in_v2_mode();
 
 retry:
 	wait_event(cpuset_attach_wq, cs->attach_in_progress == 0);
