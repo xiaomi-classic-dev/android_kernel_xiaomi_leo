@@ -79,6 +79,8 @@ enum bpf_cmd {
 	BPF_PROG_GET_NEXT_ID = 11,
 	BPF_MAP_GET_NEXT_ID = 12,
 	BPF_OBJ_GET_INFO_BY_FD = 15,
+	BPF_BTF_LOAD = 18,
+	BPF_BTF_GET_FD_BY_ID = 19,
 };
 
 #define BPF_TAG_SIZE 8
@@ -183,6 +185,10 @@ union bpf_attr {
 		__u32	inner_map_fd;	/* reserved: map-in-map is unsupported */
 		__u32	numa_node;	/* reserved: NUMA maps are unsupported */
 		char	map_name[BPF_OBJ_NAME_LEN];
+		__u32	map_ifindex;	/* reserved: offload is unsupported */
+		__u32	btf_fd;
+		__u32	btf_key_type_id;
+		__u32	btf_value_type_id;
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -224,7 +230,10 @@ union bpf_attr {
 	};
 
 	struct { /* anonymous struct used by BPF_*_GET_NEXT_ID */
-		__u32		start_id;
+		union {
+			__u32	start_id;
+			__u32	btf_id;
+		};
 		__u32		next_id;
 	};
 
@@ -233,6 +242,14 @@ union bpf_attr {
 		__u32		info_len;
 		__aligned_u64	info;
 	} info;
+
+	struct { /* used by BPF_BTF_LOAD */
+		__aligned_u64	btf;
+		__aligned_u64	btf_log_buf;
+		__u32		btf_size;
+		__u32		btf_log_size;
+		__u32		btf_log_level;
+	};
 } __attribute__((aligned(8)));
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
@@ -695,6 +712,19 @@ struct bpf_map_info {
 	__u32 max_entries;
 	__u32 map_flags;
 	char name[BPF_OBJ_NAME_LEN];
+	__u32 ifindex;
+	__u32 :32;
+	__u64 netns_dev;
+	__u64 netns_ino;
+	__u32 btf_id;
+	__u32 btf_key_type_id;
+	__u32 btf_value_type_id;
+} __attribute__((aligned(8)));
+
+struct bpf_btf_info {
+	__aligned_u64 btf;
+	__u32 btf_size;
+	__u32 id;
 } __attribute__((aligned(8)));
 
 #endif /* _UAPI__LINUX_BPF_H__ */

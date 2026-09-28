@@ -15,6 +15,7 @@
 
 struct perf_event;
 struct bpf_map;
+struct btf;
 
 /* map is generic key/value storage optionally accesible by eBPF programs */
 struct bpf_map_ops {
@@ -45,6 +46,9 @@ struct bpf_map {
 	u32 pages;
 	u32 id;
 	char name[BPF_OBJ_NAME_LEN];
+	struct btf *btf;
+	u32 btf_key_type_id;
+	u32 btf_value_type_id;
 	bool unpriv_array;
 	struct user_struct *user;
 	const struct bpf_map_ops *ops;
