@@ -18,6 +18,7 @@
 
 /* Instantiate tracepoints */
 #define CREATE_TRACE_POINTS
+#include <trace/events/gpu_mem.h>
 #include "kgsl_trace.h"
 
 EXPORT_TRACEPOINT_SYMBOL(kgsl_regwrite);

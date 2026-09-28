@@ -32,6 +32,7 @@
 #include <linux/security.h>
 #include <linux/compat.h>
 #include <asm/cacheflush.h>
+#include <trace/events/gpu_mem.h>
 
 #include "kgsl.h"
 #include "kgsl_debugfs.h"
@@ -105,6 +106,40 @@ static int __kgsl_check_collision(struct kgsl_process_private *private,
 #define MEMFREE_ENTRIES 512
 
 static DEFINE_SPINLOCK(memfree_lock);
+
+/* Serialize totals and their events so BPF cannot observe stale updates. */
+static DEFINE_SPINLOCK(gpu_mem_lock);
+static u64 gpu_mem_total;
+
+/* Caller holds the owning process's mem_lock. Count only committed entries,
+ * including imported buffers, and subtract the same size on final release.
+ */
+static void kgsl_gpu_mem_account(struct kgsl_mem_entry *entry, bool add)
+{
+	struct kgsl_process_private *process = entry->priv;
+	u64 size = add ? entry->memdesc.size : entry->gpu_mem_size;
+	unsigned long flags;
+
+	assert_spin_locked(&process->mem_lock);
+	if (!size)
+		return;
+	if (add && WARN_ON(entry->gpu_mem_size))
+		return;
+	entry->gpu_mem_size = add ? size : 0;
+
+	spin_lock_irqsave(&gpu_mem_lock, flags);
+	if (add) {
+		process->gpu_mem_total += size;
+		gpu_mem_total += size;
+	} else {
+		process->gpu_mem_total -= size;
+		gpu_mem_total -= size;
+	}
+	/* Libra has one Adreno GPU; Android's default GPU id is zero. */
+	trace_gpu_mem_total(0, process->pid, process->gpu_mem_total);
+	trace_gpu_mem_total(0, 0, gpu_mem_total);
+	spin_unlock_irqrestore(&gpu_mem_lock, flags);
+}
 
 struct memfree_entry {
 	unsigned long gpuaddr;
@@ -377,6 +412,7 @@ static void kgsl_mem_entry_commit_process(struct kgsl_process_private *process,
 	kgsl_mem_entry_commit_mem_list(process, entry);
 	/* Replace mem entry in mem_idr using id */
 	idr_replace(&entry->priv->mem_idr, entry, entry->id);
+	kgsl_gpu_mem_account(entry, true);
 	spin_unlock(&entry->priv->mem_lock);
 }
 
@@ -486,6 +522,7 @@ static void kgsl_mem_entry_detach_process(struct kgsl_mem_entry *entry)
 
 	type = kgsl_memdesc_usermem_type(&entry->memdesc);
 	entry->priv->stats[type].cur -= entry->memdesc.size;
+	kgsl_gpu_mem_account(entry, false);
 	spin_unlock(&entry->priv->mem_lock);
 	kgsl_process_private_put(entry->priv);
 

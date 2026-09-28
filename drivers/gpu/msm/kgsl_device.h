@@ -506,6 +506,8 @@ struct kgsl_process_private {
 		unsigned int cur;
 		unsigned int max;
 	} stats[KGSL_MEM_ENTRY_MAX];
+	/* Protected by gpu_mem_lock together with the global total. */
+	u64 gpu_mem_total;
 	struct idr syncsource_idr;
 	spinlock_t syncsource_lock;
 	int fd_count;

@@ -198,6 +198,8 @@ struct kgsl_mem_entry {
 	unsigned int id;
 	struct kgsl_process_private *priv;
 	int pending_free;
+	/* Bytes committed to Android GPU accounting; zero on failed attach. */
+	u64 gpu_mem_size;
 };
 
 struct kgsl_device_private;
