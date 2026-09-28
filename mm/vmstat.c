@@ -1102,6 +1102,19 @@ static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 {
 	int i;
 	seq_printf(m, "Node %d, zone %8s", pgdat->node_id, zone->name);
+	/* Newer userspace expects node totals in the first populated zone. */
+	for (i = 0; i < MAX_NR_ZONES; i++) {
+		if (!populated_zone(&pgdat->node_zones[i]))
+			continue;
+		if (zone == &pgdat->node_zones[i])
+			seq_printf(m,
+				   "\n  per-node stats"
+				   "\n      nr_inactive_file %lu"
+				   "\n      nr_active_file %lu",
+				   node_page_state(pgdat->node_id, NR_INACTIVE_FILE),
+				   node_page_state(pgdat->node_id, NR_ACTIVE_FILE));
+		break;
+	}
 	seq_printf(m,
 		   "\n  pages free     %lu"
 		   "\n        min      %lu"
