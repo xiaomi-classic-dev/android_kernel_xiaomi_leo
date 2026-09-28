@@ -213,6 +213,9 @@ static struct ctl_table net_core_table[] = {
 		.extra1		= &zero,
 		.extra2		= &two,
 	},
+# endif
+/* The legacy arm64 eBPF backend predates HAVE_EBPF_JIT in Kconfig. */
+# if defined(CONFIG_HAVE_EBPF_JIT) || defined(CONFIG_ARM64)
 	{
 		.procname	= "bpf_jit_kallsyms",
 		.data		= &bpf_jit_kallsyms,
