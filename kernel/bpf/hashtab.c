@@ -751,6 +751,142 @@ static void htab_map_free(struct bpf_map *map)
 	kfree(htab);
 }
 
+/* Linux 5.10 batch semantics: the cursor is a bucket number, not a key.
+ * A bucket is copied (and optionally removed) under its update lock, and
+ * is never partially consumed when the user's buffer is too small.
+ */
+static int htab_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
+			     union bpf_attr __user *uattr, bool do_delete)
+{
+	struct bpf_htab *htab = container_of(map, struct bpf_htab, map);
+	void __user *ukeys = (void __user *)(unsigned long)attr->batch.keys;
+	void __user *uvalues = (void __user *)(unsigned long)attr->batch.values;
+	void __user *in = (void __user *)(unsigned long)attr->batch.in_batch;
+	void __user *out = (void __user *)(unsigned long)attr->batch.out_batch;
+	void *keys = NULL, *values = NULL, *dst;
+	struct htab_elem *elem;
+	struct hlist_nulls_node *node;
+	struct bucket *b;
+	unsigned long flags;
+	u32 batch = 0, total = 0, n, capacity = 5, i;
+	u32 key_size = map->key_size, value_size = map->value_size;
+	u32 cpu_size = round_up(map->value_size, 8);
+	bool percpu = map->map_type == BPF_MAP_TYPE_PERCPU_HASH;
+	int ret = 0;
+
+	if (attr->batch.flags || attr->batch.elem_flags)
+		return -EINVAL;
+	if (!attr->batch.count)
+		return 0;
+	if (put_user(0, &uattr->batch.count))
+		return -EFAULT;
+	if (in && copy_from_user(&batch, in, sizeof(batch)))
+		return -EFAULT;
+	if (percpu) {
+		u64 bytes = (u64)cpu_size * num_possible_cpus();
+		if (bytes > U32_MAX)
+			return -E2BIG;
+		value_size = bytes;
+	}
+alloc:
+	if (capacity > U32_MAX / key_size || capacity > U32_MAX / value_size) {
+		ret = -E2BIG;
+		goto done;
+	}
+	keys = bpf_map_area_alloc((size_t)capacity * key_size);
+	values = bpf_map_area_alloc((size_t)capacity * value_size);
+	if (!keys || !values) {
+		ret = -ENOMEM;
+		goto done;
+	}
+	while (batch < htab->n_buckets) {
+		preempt_disable();
+		__this_cpu_inc(bpf_prog_active);
+		rcu_read_lock();
+		b = &htab->buckets[batch];
+		raw_spin_lock_irqsave(&b->lock, flags);
+		n = 0;
+		hlist_nulls_for_each_entry_rcu(elem, node, &b->head, hash_node)
+			n++;
+		if (n > attr->batch.count - total) {
+			ret = total ? 0 : -ENOSPC;
+			goto unlock_done;
+		}
+		if (n > capacity) {
+			capacity = n;
+			raw_spin_unlock_irqrestore(&b->lock, flags);
+			rcu_read_unlock();
+			__this_cpu_dec(bpf_prog_active);
+			preempt_enable();
+			bpf_map_area_free(keys);
+			bpf_map_area_free(values);
+			keys = values = NULL;
+			goto alloc;
+		}
+		i = 0;
+		hlist_nulls_for_each_entry_safe(elem, node, &b->head, hash_node) {
+			memcpy(keys + (size_t)i * key_size, elem->key, key_size);
+			dst = values + (size_t)i * value_size;
+			if (percpu) {
+				void __percpu *pptr = htab_elem_get_ptr(elem, key_size);
+				int cpu, offset = 0;
+				for_each_possible_cpu(cpu) {
+					memcpy(dst + offset, per_cpu_ptr(pptr, cpu), cpu_size);
+					offset += cpu_size;
+				}
+			} else {
+				memcpy(dst, elem->key + round_up(key_size, 8), value_size);
+			}
+			if (do_delete) {
+				hlist_nulls_del_rcu(&elem->hash_node);
+				free_htab_elem(htab, elem);
+			}
+			i++;
+		}
+		raw_spin_unlock_irqrestore(&b->lock, flags);
+		rcu_read_unlock();
+		__this_cpu_dec(bpf_prog_active);
+		preempt_enable();
+		if (n && (copy_to_user(ukeys + (size_t)total * key_size,
+				      keys, (size_t)n * key_size) ||
+			  copy_to_user(uvalues + (size_t)total * value_size,
+				      values, (size_t)n * value_size))) {
+			ret = -EFAULT;
+			goto done;
+		}
+		total += n;
+		batch++;
+		cond_resched();
+	}
+	ret = -ENOENT;
+	goto done;
+unlock_done:
+	raw_spin_unlock_irqrestore(&b->lock, flags);
+	rcu_read_unlock();
+	__this_cpu_dec(bpf_prog_active);
+	preempt_enable();
+done:
+	if (ret != -EFAULT &&
+	    (copy_to_user(out, &batch, sizeof(batch)) ||
+	     put_user(total, &uattr->batch.count)))
+		ret = -EFAULT;
+	bpf_map_area_free(keys);
+	bpf_map_area_free(values);
+	return ret;
+}
+
+static int htab_map_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
+				 union bpf_attr __user *uattr)
+{
+	return htab_lookup_batch(map, attr, uattr, false);
+}
+
+static int htab_map_lookup_and_delete_batch(struct bpf_map *map,
+		const union bpf_attr *attr, union bpf_attr __user *uattr)
+{
+	return htab_lookup_batch(map, attr, uattr, true);
+}
+
 static const struct bpf_map_ops htab_ops = {
 	.map_alloc = htab_map_alloc,
 	.map_free = htab_map_free,
@@ -758,6 +894,8 @@ static const struct bpf_map_ops htab_ops = {
 	.map_lookup_elem = htab_map_lookup_elem,
 	.map_update_elem = htab_map_update_elem,
 	.map_delete_elem = htab_map_delete_elem,
+	.map_lookup_batch = htab_map_lookup_batch,
+	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
 };
 
 static struct bpf_map_type_list htab_type __read_mostly = {
@@ -824,6 +962,8 @@ static const struct bpf_map_ops htab_percpu_ops = {
 	.map_lookup_elem = htab_percpu_map_lookup_elem,
 	.map_update_elem = htab_percpu_map_update_elem,
 	.map_delete_elem = htab_map_delete_elem,
+	.map_lookup_batch = htab_map_lookup_batch,
+	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
 };
 
 static struct bpf_map_type_list htab_percpu_type __read_mostly = {

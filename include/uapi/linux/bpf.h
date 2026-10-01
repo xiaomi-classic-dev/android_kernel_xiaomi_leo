@@ -82,6 +82,8 @@ enum bpf_cmd {
 	BPF_PROG_QUERY = 16,
 	BPF_BTF_LOAD = 18,
 	BPF_BTF_GET_FD_BY_ID = 19,
+	BPF_MAP_LOOKUP_BATCH = 24,
+	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
 };
 
 #define BPF_TAG_SIZE 8
@@ -97,8 +99,11 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_PERCPU_ARRAY,
 	BPF_MAP_TYPE_STACK_TRACE,
 	BPF_MAP_TYPE_CGROUP_ARRAY,
+	BPF_MAP_TYPE_LRU_HASH = 9,
 	BPF_MAP_TYPE_LPM_TRIE = 11,
+	BPF_MAP_TYPE_SK_STORAGE = 24,
 	BPF_MAP_TYPE_DEVMAP_HASH = 25,
+	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
 enum bpf_prog_type {
@@ -130,6 +135,7 @@ enum bpf_attach_type {
 	BPF_CGROUP_UDP6_RECVMSG = 20,
 	BPF_CGROUP_GETSOCKOPT = 21,
 	BPF_CGROUP_SETSOCKOPT = 22,
+	BPF_CGROUP_INET_SOCK_RELEASE = 34,
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -187,6 +193,8 @@ enum bpf_attach_type {
 
 #define BPF_F_NO_PREALLOC	(1U << 0)
 #define BPF_F_RDONLY_PROG	(1U << 7)
+#define BPF_F_MMAPABLE		(1U << 10)
+#define BPF_SK_STORAGE_GET_F_CREATE (1U << 0)
 
 /* Flags for accessing BPF object */
 #define BPF_F_RDONLY		(1U << 3)
@@ -218,6 +226,17 @@ union bpf_attr {
 		__u64		flags;
 	};
 
+	struct { /* used by BPF_MAP_*_BATCH; keep the upstream UAPI layout */
+		__aligned_u64 in_batch;
+		__aligned_u64 out_batch;
+		__aligned_u64 keys;
+		__aligned_u64 values;
+		__u32 count;
+		__u32 map_fd;
+		__u64 elem_flags;
+		__u64 flags;
+	} batch;
+
 	struct { /* anonymous struct used by BPF_PROG_LOAD command */
 		__u32		prog_type;	/* one of enum bpf_prog_type */
 		__u32		insn_cnt;
@@ -231,6 +250,13 @@ union bpf_attr {
 		char		prog_name[BPF_OBJ_NAME_LEN];
 		__u32		prog_ifindex;	/* reserved: offload is unsupported */
 		__u32		expected_attach_type;
+		__u32		prog_btf_fd;
+		__u32		func_info_rec_size;
+		__aligned_u64	func_info;
+		__u32		func_info_cnt;
+		__u32		line_info_rec_size;
+		__aligned_u64	line_info;
+		__u32		line_info_cnt;
 	};
 
 	struct { /* anonymous struct used by BPF_OBJ_* commands */
@@ -624,8 +650,56 @@ enum bpf_func_id {
 
 	BPF_FUNC_skb_adjust_room = 50,
 	BPF_FUNC_skb_load_bytes_relative = 68,
+	BPF_FUNC_sk_lookup_tcp = 84,
+	BPF_FUNC_sk_lookup_udp = 85,
+	BPF_FUNC_sk_release = 86,
 	BPF_FUNC_sk_fullsock = 95,
+	BPF_FUNC_sk_storage_get = 107,
+	BPF_FUNC_sk_storage_delete = 108,
+	BPF_FUNC_ktime_get_boot_ns = 125,
+	BPF_FUNC_ringbuf_output = 130,
+	BPF_FUNC_ringbuf_reserve = 131,
+	BPF_FUNC_ringbuf_submit = 132,
+	BPF_FUNC_ringbuf_discard = 133,
+	BPF_FUNC_ringbuf_query = 134,
 	__BPF_FUNC_MAX_ID,
+};
+
+enum {
+	BPF_RB_NO_WAKEUP = (1ULL << 0),
+	BPF_RB_FORCE_WAKEUP = (1ULL << 1),
+};
+
+#define BPF_F_CURRENT_NETNS (-1L)
+
+struct bpf_sock_tuple {
+	union {
+		struct {
+			__be32 saddr;
+			__be32 daddr;
+			__be16 sport;
+			__be16 dport;
+		} ipv4;
+		struct {
+			__be32 saddr[4];
+			__be32 daddr[4];
+			__be16 sport;
+			__be16 dport;
+		} ipv6;
+	};
+};
+
+enum {
+	BPF_RB_AVAIL_DATA = 0,
+	BPF_RB_RING_SIZE = 1,
+	BPF_RB_CONS_POS = 2,
+	BPF_RB_PROD_POS = 3,
+};
+
+enum {
+	BPF_RINGBUF_BUSY_BIT = (1U << 31),
+	BPF_RINGBUF_DISCARD_BIT = (1U << 30),
+	BPF_RINGBUF_HDR_SZ = 8,
 };
 
 /* All flags used by eBPF helper functions, placed here. */
@@ -701,6 +775,18 @@ struct __sk_buff {
 	__u32 gso_segs;
 	__aligned_u64 sk;
 	__u32 gso_size;
+};
+
+struct bpf_func_info {
+	__u32 insn_off;
+	__u32 type_id;
+};
+
+struct bpf_line_info {
+	__u32 insn_off;
+	__u32 file_name_off;
+	__u32 line_off;
+	__u32 line_col;
 };
 
 struct bpf_lpm_trie_key {

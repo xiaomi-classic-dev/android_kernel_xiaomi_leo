@@ -92,6 +92,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/capability.h>
+#include <linux/bpf.h>
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
@@ -1413,6 +1414,7 @@ static void __sk_free(struct sock *sk)
 {
 	struct sk_filter *filter;
 
+	bpf_sk_storage_free(sk);
 	if (sk->sk_destruct)
 		sk->sk_destruct(sk);
 
@@ -1498,6 +1500,7 @@ struct sock *sk_clone_lock(const struct sock *sk, const gfp_t priority)
 		struct sk_filter *filter;
 
 		sock_copy(newsk, sk);
+		RCU_INIT_POINTER(newsk->sk_bpf_storage, NULL);
 
 		newsk->sk_prot_creator = sk->sk_prot;
 

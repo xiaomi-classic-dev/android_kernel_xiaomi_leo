@@ -15,9 +15,10 @@
 #include <linux/mm.h>
 #include <linux/filter.h>
 #include <linux/perf_event.h>
+#include <linux/vmalloc.h>
 
 #define ARRAY_CREATE_FLAG_MASK \
-	(BPF_F_RDONLY | BPF_F_WRONLY)
+	(BPF_F_RDONLY | BPF_F_WRONLY | BPF_F_MMAPABLE)
 
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
@@ -52,9 +53,10 @@ static int bpf_array_alloc_percpu(struct bpf_array *array)
 static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 {
 	bool percpu = attr->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
+	bool mmapable = attr->map_flags & BPF_F_MMAPABLE;
 	u32 elem_size, index_mask, max_entries;
 	bool unpriv = !capable(CAP_SYS_ADMIN);
-	u64 cost, array_size, mask64;
+	u64 cost, array_size, mask64, value_bytes = 0;
 	struct bpf_array *array;
 	int ret;
 
@@ -62,6 +64,8 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	if (attr->max_entries == 0 || attr->key_size != 4 ||
 	    attr->value_size == 0 ||
 	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK)
+		return ERR_PTR(-EINVAL);
+	if (mmapable && attr->map_type != BPF_MAP_TYPE_ARRAY)
 		return ERR_PTR(-EINVAL);
 
 	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
@@ -96,11 +100,14 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	array_size = sizeof(*array);
 	if (percpu)
 		array_size += (u64) max_entries * sizeof(void *);
+	else if (mmapable)
+		value_bytes = (u64)max_entries * elem_size;
 	else
 		array_size += (u64) max_entries * elem_size;
 
 	/* make sure there is no u32 overflow later in round_up() */
-	cost = array_size;
+	cost = mmapable ? PAGE_ALIGN(array_size) + PAGE_ALIGN(value_bytes) :
+		array_size;
 	if (cost >= U32_MAX - PAGE_SIZE)
 		return ERR_PTR(-ENOMEM);
 	if (percpu) {
@@ -118,6 +125,13 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	array = bpf_map_area_alloc(array_size);
 	if (!array)
 		return ERR_PTR(-ENOMEM);
+	if (mmapable) {
+		array->mmap_values = vmalloc_user(PAGE_ALIGN(value_bytes));
+		if (!array->mmap_values) {
+			bpf_map_area_free(array);
+			return ERR_PTR(-ENOMEM);
+		}
+	}
 	array->index_mask = index_mask;
 	array->map.unpriv_array = unpriv;
 
@@ -149,7 +163,8 @@ static void *array_map_lookup_elem(struct bpf_map *map, void *key)
 	if (unlikely(index >= array->map.max_entries))
 		return NULL;
 
-	return array->value + array->elem_size * (index & array->index_mask);
+	return (array->mmap_values ? array->mmap_values : array->value) +
+		array->elem_size * (index & array->index_mask);
 }
 
 /* Called from eBPF program */
@@ -232,7 +247,7 @@ static int array_map_update_elem(struct bpf_map *map, void *key, void *value,
 		memcpy(this_cpu_ptr(array->pptrs[index & array->index_mask]),
 		       value, map->value_size);
 	else
-		memcpy(array->value +
+		memcpy((array->mmap_values ? array->mmap_values : array->value) +
 		       array->elem_size * (index & array->index_mask),
 		       value, map->value_size);
 	return 0;
@@ -296,13 +311,31 @@ static void array_map_free(struct bpf_map *map)
 
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
 		bpf_array_free_percpu(array);
+	vfree(array->mmap_values);
 
 	bpf_map_area_free(array);
 }
 
+static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u64 size = (u64)array->elem_size * map->max_entries;
+	u64 offset = (u64)vma->vm_pgoff << PAGE_SHIFT;
+	u64 mapped = PAGE_ALIGN(size);
+
+	if (!array->mmap_values ||
+	    vma->vm_pgoff > (mapped >> PAGE_SHIFT) || offset > mapped ||
+	    (u64)(vma->vm_end - vma->vm_start) > mapped - offset)
+		return -EINVAL;
+	return remap_vmalloc_range(vma, array->mmap_values,
+				  vma->vm_pgoff);
+}
+
 static const struct bpf_map_ops array_ops = {
+	.map_lookup_batch = generic_map_lookup_batch,
 	.map_alloc = array_map_alloc,
 	.map_free = array_map_free,
+	.map_mmap = array_map_mmap,
 	.map_get_next_key = array_map_get_next_key,
 	.map_lookup_elem = array_map_lookup_elem,
 	.map_update_elem = array_map_update_elem,
@@ -315,6 +348,7 @@ static struct bpf_map_type_list array_type __read_mostly = {
 };
 
 static const struct bpf_map_ops percpu_array_ops = {
+	.map_lookup_batch = generic_map_lookup_batch,
 	.map_alloc = array_map_alloc,
 	.map_free = array_map_free,
 	.map_get_next_key = array_map_get_next_key,

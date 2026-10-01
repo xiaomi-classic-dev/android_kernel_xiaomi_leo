@@ -64,8 +64,12 @@ struct btf_type {
 #define BTF_KIND_VOLATILE	9	/* Volatile	*/
 #define BTF_KIND_CONST		10	/* Const	*/
 #define BTF_KIND_RESTRICT	11	/* Restrict	*/
-#define BTF_KIND_MAX		11
-#define NR_BTF_KINDS		12
+#define BTF_KIND_FUNC		12	/* Function	*/
+#define BTF_KIND_FUNC_PROTO	13	/* Function prototype */
+#define BTF_KIND_VAR		14	/* Variable	*/
+#define BTF_KIND_DATASEC	15	/* Data section	*/
+#define BTF_KIND_MAX		BTF_KIND_DATASEC
+#define NR_BTF_KINDS		(BTF_KIND_MAX + 1)
 
 /* For some specific BTF_KIND, "struct btf_type" is immediately
  * followed by extra data.
@@ -108,6 +112,34 @@ struct btf_member {
 	__u32	name_off;
 	__u32	type;
 	__u32	offset;	/* offset in bits */
+};
+
+/* BTF_KIND_FUNC_PROTO is followed by vlen parameters. */
+struct btf_param {
+	__u32	name_off;
+	__u32	type;
+};
+
+enum btf_func_linkage {
+	BTF_FUNC_STATIC = 0,
+	BTF_FUNC_GLOBAL = 1,
+};
+
+enum {
+	BTF_VAR_STATIC,
+	BTF_VAR_GLOBAL_ALLOCATED,
+};
+
+/* BTF_KIND_VAR is followed by its linkage. */
+struct btf_var {
+	__u32	linkage;
+};
+
+/* BTF_KIND_DATASEC is followed by vlen variable descriptions. */
+struct btf_var_secinfo {
+	__u32	type;
+	__u32	offset;
+	__u32	size;
 };
 
 #endif /* _UAPI__LINUX_BTF_H__ */

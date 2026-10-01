@@ -15,6 +15,8 @@ extern const struct file_operations btf_fops;
 void btf_put(struct btf *btf);
 int btf_new_fd(const union bpf_attr *attr);
 struct btf *btf_get_by_fd(int fd);
+const struct btf_type *btf_type_by_id(const struct btf *btf, u32 type_id);
+bool btf_name_offset_valid(const struct btf *btf, u32 offset);
 int btf_get_info_by_fd(const struct btf *btf,
 		       const union bpf_attr *attr,
 		       union bpf_attr __user *uattr);

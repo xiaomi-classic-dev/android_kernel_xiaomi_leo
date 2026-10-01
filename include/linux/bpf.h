@@ -16,6 +16,8 @@
 struct perf_event;
 struct bpf_map;
 struct btf;
+struct sock;
+struct poll_table_struct;
 
 /* map is generic key/value storage optionally accesible by eBPF programs */
 struct bpf_map_ops {
@@ -23,7 +25,15 @@ struct bpf_map_ops {
 	struct bpf_map *(*map_alloc)(union bpf_attr *attr);
 	void (*map_release)(struct bpf_map *map, struct file *map_file);
 	void (*map_free)(struct bpf_map *map);
+	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+	unsigned int (*map_poll)(struct bpf_map *map, struct file *filp,
+				 struct poll_table_struct *pts);
 	int (*map_get_next_key)(struct bpf_map *map, void *key, void *next_key);
+	int (*map_lookup_batch)(struct bpf_map *map, const union bpf_attr *attr,
+				union bpf_attr __user *uattr);
+	int (*map_lookup_and_delete_batch)(struct bpf_map *map,
+				const union bpf_attr *attr,
+				union bpf_attr __user *uattr);
 
 	/* funcs callable from userspace and from eBPF programs */
 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
@@ -35,6 +45,9 @@ struct bpf_map_ops {
 				int fd);
 	void (*map_fd_put_ptr)(void *ptr);
 };
+
+int generic_map_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
+			     union bpf_attr __user *uattr);
 
 struct bpf_map {
 	atomic_t refcnt;
@@ -75,6 +88,7 @@ enum bpf_arg_type {
 	ARG_CONST_MAP_PTR,	/* const argument used as pointer to bpf_map */
 	ARG_PTR_TO_MAP_KEY,	/* pointer to stack used as map key */
 	ARG_PTR_TO_MAP_VALUE,	/* pointer to stack used as map value */
+	ARG_PTR_TO_MAP_VALUE_OR_NULL,
 
 	/* the following constraints used to prototype bpf_memcmp() and other
 	 * functions that access data on eBPF program stack
@@ -90,6 +104,12 @@ enum bpf_arg_type {
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_PTR_TO_SOCK_COMMON,
+	ARG_PTR_TO_SOCKET,
+	ARG_CONST_ALLOC_SIZE_OR_ZERO,
+	ARG_PTR_TO_ALLOC_MEM,
+	ARG_PTR_TO_MEM,
+	ARG_CONST_SIZE,
+	ARG_CONST_SIZE_OR_ZERO,
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
 };
 
@@ -99,6 +119,7 @@ enum bpf_return_type {
 	RET_PTR_TO_SOCKET_OR_NULL,
 	RET_VOID,			/* function doesn't return anything */
 	RET_PTR_TO_MAP_VALUE_OR_NULL,	/* returns a pointer to map elem value or NULL */
+	RET_PTR_TO_ALLOC_MEM_OR_NULL,
 };
 
 /* eBPF function prototype used by verifier to allow BPF_CALLs from eBPF programs
@@ -162,6 +183,8 @@ enum bpf_reg_type {
 	PTR_TO_SOCK_COMMON_OR_NULL,
 	PTR_TO_SOCKET,
 	PTR_TO_SOCKET_OR_NULL,
+	PTR_TO_ALLOC_MEM_OR_NULL,
+	PTR_TO_ALLOC_MEM,
 };
 
 struct bpf_prog;
@@ -216,6 +239,7 @@ struct bpf_array {
 	struct bpf_map map;
 	u32 elem_size;
 	u32 index_mask;
+	void *mmap_values;
 	/* 'ownership' of prog_array is claimed by the first program that
 	 * is going to use this map or by the first program which FD is stored
 	 * in the map to make sure that all callers and callees have the same
@@ -326,6 +350,20 @@ struct bpf_map *__bpf_map_get(struct fd f);
 struct bpf_map *bpf_map_inc(struct bpf_map *map, bool uref);
 void bpf_map_put_with_uref(struct bpf_map *map);
 void bpf_map_put(struct bpf_map *map);
+void bpf_sk_storage_free(struct sock *sk);
+int bpf_sk_storage_copy(struct bpf_map *map, void *key, void *value);
+int bpf_sk_storage_update_user(struct bpf_map *map, void *key,
+			       void *value, u64 flags);
+int bpf_sk_storage_delete_user(struct bpf_map *map, void *key);
+extern const struct bpf_func_proto bpf_sk_storage_get_proto;
+extern const struct bpf_func_proto bpf_sk_storage_get_cg_sock_proto;
+extern const struct bpf_func_proto bpf_sk_storage_delete_proto;
+extern const struct bpf_func_proto bpf_sk_storage_delete_cg_sock_proto;
+extern const struct bpf_func_proto bpf_ringbuf_reserve_proto;
+extern const struct bpf_func_proto bpf_ringbuf_submit_proto;
+extern const struct bpf_func_proto bpf_ringbuf_discard_proto;
+extern const struct bpf_func_proto bpf_ringbuf_output_proto;
+extern const struct bpf_func_proto bpf_ringbuf_query_proto;
 int bpf_map_precharge_memlock(u32 pages);
 void *bpf_map_area_alloc(size_t size);
 void bpf_map_area_free(void *base);
@@ -375,6 +413,7 @@ int bpf_check(struct bpf_prog **fp, union bpf_attr *attr);
 struct bpf_prog *bpf_prog_get_type_path(const char *name, enum bpf_prog_type type);
 
 #else
+static inline void bpf_sk_storage_free(struct sock *sk) { }
 static inline void bpf_register_prog_type(struct bpf_prog_type_list *tl)
 {
 }
@@ -432,6 +471,7 @@ extern const struct bpf_func_proto bpf_get_prandom_u32_proto;
 extern const struct bpf_func_proto bpf_get_smp_processor_id_proto;
 extern const struct bpf_func_proto bpf_tail_call_proto;
 extern const struct bpf_func_proto bpf_ktime_get_ns_proto;
+extern const struct bpf_func_proto bpf_ktime_get_boot_ns_proto;
 extern const struct bpf_func_proto bpf_get_current_pid_tgid_proto;
 extern const struct bpf_func_proto bpf_get_current_uid_gid_proto;
 extern const struct bpf_func_proto bpf_get_current_comm_proto;

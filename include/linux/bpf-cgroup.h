@@ -129,6 +129,13 @@ int __cgroup_bpf_getsockopt(struct sock *sk, int level, int optname,
 	__ret;								       \
 })
 
+#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) \
+	do { \
+		if (cgroup_bpf_enabled && (sk)) \
+			__cgroup_bpf_run_filter_sk((sk), \
+					BPF_CGROUP_INET_SOCK_RELEASE); \
+	} while (0)
+
 #else
 
 struct cgroup_bpf {};
@@ -142,6 +149,7 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) do { } while (0)
 
 #endif /* CONFIG_CGROUP_BPF */
 

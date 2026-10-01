@@ -215,6 +215,7 @@ struct sock_common {
 };
 
 struct cg_proto;
+struct bpf_sk_storage;
 /**
   *	struct sock - network layer representation of sockets
   *	@__sk_common: shared layout with inet_timewait_sock
@@ -392,6 +393,7 @@ struct sock {
 	ktime_t			sk_stamp;
 	struct socket		*sk_socket;
 	void			*sk_user_data;
+	struct bpf_sk_storage __rcu *sk_bpf_storage;
 	struct page_frag	sk_frag;
 	struct sk_buff		*sk_send_head;
 	__s32			sk_peek_off;

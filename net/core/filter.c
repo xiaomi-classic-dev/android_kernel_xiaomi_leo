@@ -51,6 +51,11 @@
 #include <net/dst_metadata.h>
 #include <net/dst.h>
 #include <net/sock_reuseport.h>
+#include <net/inet_hashtables.h>
+#include <net/inet6_hashtables.h>
+#include <net/inet_timewait_sock.h>
+#include <net/tcp.h>
+#include <net/udp.h>
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -2565,6 +2570,18 @@ static const struct bpf_func_proto bpf_get_socket_cookie_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_get_sk_cookie, struct sock *, sk)
+{
+	return sk ? sock_gen_cookie(sk) : 0;
+}
+
+static const struct bpf_func_proto bpf_get_sk_cookie_proto = {
+	.func		= bpf_get_sk_cookie,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+};
+
 BPF_CALL_1(bpf_get_socket_uid, struct sk_buff *, skb)
 {
 	struct sock *sk = skb->sk;
@@ -2583,10 +2600,127 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+#if IS_ENABLED(CONFIG_INET)
+/* The 3.10 lookup routines return refcounted sockets, unlike the RCU-only
+ * paths of newer kernels.  Keep that reference until sk_release(). */
+static struct sock *bpf_sk_lookup_legacy(struct sk_buff *skb,
+		struct bpf_sock_tuple *tuple, u32 len, u8 proto,
+		u64 netns_id, u64 flags)
+{
+	struct net *net;
+	struct sock *sk = NULL;
+	int dif;
+
+	if (flags || netns_id != (u64)-1 ||
+	    (len != sizeof(tuple->ipv4) && len != sizeof(tuple->ipv6)))
+		return NULL;
+	if (skb->dev) {
+		net = dev_net(skb->dev);
+		dif = skb->dev->ifindex;
+	} else if (skb->sk) {
+		net = sock_net(skb->sk);
+		dif = 0;
+	} else {
+		return NULL;
+	}
+	if (len == sizeof(tuple->ipv4)) {
+		if (proto == IPPROTO_TCP)
+			sk = inet_lookup(net, &tcp_hashinfo,
+					 tuple->ipv4.saddr, tuple->ipv4.sport,
+					 tuple->ipv4.daddr, tuple->ipv4.dport,
+					 dif);
+		else
+			sk = udp4_lib_lookup(net, tuple->ipv4.saddr,
+					     tuple->ipv4.sport,
+					     tuple->ipv4.daddr,
+					     tuple->ipv4.dport, dif);
+#if IS_ENABLED(CONFIG_IPV6)
+	} else {
+		if (proto == IPPROTO_TCP)
+			sk = inet6_lookup(net, &tcp_hashinfo,
+					  (const struct in6_addr *)tuple->ipv6.saddr,
+					  tuple->ipv6.sport,
+					  (const struct in6_addr *)tuple->ipv6.daddr,
+					  tuple->ipv6.dport, dif);
+		else
+			sk = udp6_lib_lookup(net,
+					     (const struct in6_addr *)tuple->ipv6.saddr,
+					     tuple->ipv6.sport,
+					     (const struct in6_addr *)tuple->ipv6.daddr,
+					     tuple->ipv6.dport, dif);
+#endif
+	}
+	if (sk && !sk_fullsock(sk)) {
+		if (sk->sk_state == TCP_TIME_WAIT)
+			inet_twsk_put(inet_twsk(sk));
+		else
+			sock_put(sk);
+		return NULL;
+	}
+	return sk;
+}
+
+BPF_CALL_5(bpf_sk_lookup_tcp, struct sk_buff *, skb,
+	   struct bpf_sock_tuple *, tuple, u32, len, u64, netns_id, u64, flags)
+{
+	return (unsigned long)bpf_sk_lookup_legacy(skb, tuple, len,
+						 IPPROTO_TCP, netns_id, flags);
+}
+
+BPF_CALL_5(bpf_sk_lookup_udp, struct sk_buff *, skb,
+	   struct bpf_sock_tuple *, tuple, u32, len, u64, netns_id, u64, flags)
+{
+	return (unsigned long)bpf_sk_lookup_legacy(skb, tuple, len,
+						 IPPROTO_UDP, netns_id, flags);
+}
+
+BPF_CALL_1(bpf_sk_release, struct sock *, sk)
+{
+	sock_put(sk);
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_sk_lookup_tcp_proto = {
+	.func = bpf_sk_lookup_tcp,
+	.ret_type = RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type = ARG_PTR_TO_CTX,
+	.arg2_type = ARG_PTR_TO_MEM,
+	.arg3_type = ARG_CONST_SIZE,
+	.arg4_type = ARG_ANYTHING,
+	.arg5_type = ARG_ANYTHING,
+};
+
+static const struct bpf_func_proto bpf_sk_lookup_udp_proto = {
+	.func = bpf_sk_lookup_udp,
+	.ret_type = RET_PTR_TO_SOCKET_OR_NULL,
+	.arg1_type = ARG_PTR_TO_CTX,
+	.arg2_type = ARG_PTR_TO_MEM,
+	.arg3_type = ARG_CONST_SIZE,
+	.arg4_type = ARG_ANYTHING,
+	.arg5_type = ARG_ANYTHING,
+};
+
+static const struct bpf_func_proto bpf_sk_release_proto = {
+	.func = bpf_sk_release,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_SOCKET,
+};
+#endif
+
 static const struct bpf_func_proto *
 sk_filter_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+	case BPF_FUNC_ringbuf_reserve:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
 	case BPF_FUNC_map_lookup_elem:
 		return &bpf_map_lookup_elem_proto;
 	case BPF_FUNC_map_update_elem:
@@ -2601,6 +2735,8 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_tail_call_proto;
 	case BPF_FUNC_ktime_get_ns:
 		return &bpf_ktime_get_ns_proto;
+	case BPF_FUNC_ktime_get_boot_ns:
+		return &bpf_ktime_get_boot_ns_proto;
 	case BPF_FUNC_trace_printk:
 		if (capable(CAP_SYS_ADMIN))
 			return bpf_get_trace_printk_proto();
@@ -2608,6 +2744,8 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
+	case BPF_FUNC_skb_load_bytes:
+		return &bpf_skb_load_bytes_proto;
 	default:
 		return NULL;
 	}
@@ -2693,6 +2831,18 @@ static const struct bpf_func_proto *
 cg_skb_func_proto(enum bpf_func_id func_id)
 {
 	switch (func_id) {
+#if IS_ENABLED(CONFIG_INET)
+	case BPF_FUNC_sk_lookup_tcp:
+		return &bpf_sk_lookup_tcp_proto;
+	case BPF_FUNC_sk_lookup_udp:
+		return &bpf_sk_lookup_udp_proto;
+	case BPF_FUNC_sk_release:
+		return &bpf_sk_release_proto;
+#endif
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
 	case BPF_FUNC_skb_load_bytes:
 		return &bpf_skb_load_bytes_proto;
 	case BPF_FUNC_skb_load_bytes_relative:
@@ -3183,6 +3333,12 @@ static const struct bpf_verifier_ops cg_skb_ops = {
 static const struct bpf_func_proto *cg_sock_func_proto(enum bpf_func_id id)
 {
 	switch (id) {
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_cg_sock_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_cg_sock_proto;
+	case BPF_FUNC_get_socket_cookie:
+		return &bpf_get_sk_cookie_proto;
 	case BPF_FUNC_get_current_uid_gid:
 		return &bpf_get_current_uid_gid_proto;
 	case BPF_FUNC_map_lookup_elem:
@@ -3200,6 +3356,25 @@ static const struct bpf_func_proto *cg_sock_func_proto(enum bpf_func_id id)
 	default:
 		return NULL;
 	}
+}
+
+static const struct bpf_func_proto *
+cg_sock_addr_func_proto(enum bpf_func_id id)
+{
+	if (id == BPF_FUNC_sk_storage_get ||
+	    id == BPF_FUNC_sk_storage_delete)
+		return NULL;
+	return cg_sock_func_proto(id);
+}
+
+static const struct bpf_func_proto *
+cg_sockopt_func_proto(enum bpf_func_id id)
+{
+	if (id == BPF_FUNC_sk_storage_get)
+		return &bpf_sk_storage_get_proto;
+	if (id == BPF_FUNC_sk_storage_delete)
+		return &bpf_sk_storage_delete_proto;
+	return cg_sock_func_proto(id);
 }
 
 static bool cg_sock_addr_is_valid_access(int off, int size,
@@ -3278,13 +3453,13 @@ static u32 cg_sockopt_convert_ctx_access(enum bpf_access_type type,
 }
 
 static const struct bpf_verifier_ops cg_sock_addr_ops = {
-	.get_func_proto = cg_sock_func_proto,
+	.get_func_proto = cg_sock_addr_func_proto,
 	.is_valid_access = cg_sock_addr_is_valid_access,
 	.convert_ctx_access = cg_sock_addr_convert_ctx_access,
 };
 
 static const struct bpf_verifier_ops cg_sockopt_ops = {
-	.get_func_proto = cg_sock_func_proto,
+	.get_func_proto = cg_sockopt_func_proto,
 	.is_valid_access_prog = cg_sockopt_is_valid_access,
 	.convert_ctx_access = cg_sockopt_convert_ctx_access,
 };
