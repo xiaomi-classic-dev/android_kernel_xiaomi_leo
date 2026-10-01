@@ -1,0 +1,5 @@
+# Android 17 first-stage init needs this before /system and /vendor are mounted.
+# The later mounts remain in the device's /vendor/etc/fstab.qcom.
+# /dev/block/bootdevice is created later by init.target.rc; first-stage init
+# needs the platform symlink generated directly from the system partition uevent.
+/dev/block/platform/soc.0/f9824900.sdhci/by-name/system /system ext4 ro,barrier=1 wait,first_stage_mount
